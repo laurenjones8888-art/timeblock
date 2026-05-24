@@ -1,0 +1,1168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TimeBlock</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #191919; color: #f0f0f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 99px; }
+    input, select { color: #f0f0f0; background: #2a2a2a; border: 1px solid #404040; border-radius: 10px; outline: none; padding: 8px 12px; font-size: 13px; font-family: inherit; }
+    input:focus, select:focus { border-color: #888; box-shadow: 0 0 0 2px #88888830; }
+    input[type="time"]::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
+    input::placeholder { color: #555; }
+    select option { background: #2a2a2a; }
+    button { font-family: inherit; }
+    .drag-handle { cursor: grab; user-select: none; }
+    .drag-handle:active { cursor: grabbing; }
+    .block-card { transition: box-shadow 0.12s, opacity 0.15s; }
+    .block-card:hover { box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
+    .is-dragging { opacity: 0.25 !important; }
+    .drag-over { box-shadow: 0 0 0 2px #888 inset !important; }
+    .done-text { text-decoration: line-through; opacity: 0.4; }
+    .progress-fill { transition: width 0.5s ease; }
+    .modal-bg { background: rgba(0,0,0,0.75); backdrop-filter: blur(6px); }
+    .tab-btn { background: none; border: none; cursor: pointer; font-family: inherit; padding: 0 0 11px 0; font-size: 13px; font-weight: 600; border-bottom: 2px solid transparent; transition: color 0.15s, border-color 0.15s; }
+    .tab-btn.active { color: #f0f0f0; border-color: #f0f0f0; }
+    .tab-btn:not(.active) { color: #555; }
+    .tab-btn:not(.active):hover { color: #999; }
+    .btn-ghost { background: transparent; border: 1px solid #3a3a3a; color: #999; border-radius: 10px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; transition: background 0.15s, color 0.15s; }
+    .btn-ghost:hover { background: #2a2a2a; color: #f0f0f0; }
+    .overflow-bar { border-left: 3px solid #f87171; }
+    .group { position: relative; }
+    .group-hover-show { opacity: 0; transition: opacity 0.15s; }
+    .group:hover .group-hover-show { opacity: 1; }
+    .emoji-btn { background: none; border: 1px solid transparent; border-radius: 6px; cursor: pointer; font-size: 18px; padding: 3px 5px; transition: border-color 0.1s, background 0.1s; }
+    .emoji-btn:hover { background: #333; border-color: #555; }
+    .emoji-btn.selected { background: #3a3a3a; border-color: #888; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useMemo } = React;
+
+    /* ═══════════════════════════════════════════════
+       BUCKET PALETTE (for bucket color picker)
+    ═══════════════════════════════════════════════ */
+    const PALETTE = [
+      { id: 'violet',  bg: '#ede8ff', text: '#3d2f8a' },
+      { id: 'sky',     bg: '#e5effd', text: '#1a3f80' },
+      { id: 'emerald', bg: '#e4f8ee', text: '#145035' },
+      { id: 'amber',   bg: '#fef7e2', text: '#6b4e17' },
+      { id: 'rose',    bg: '#fde4eb', text: '#7f2038' },
+      { id: 'orange',  bg: '#fef0e4', text: '#7a3514' },
+      { id: 'pink',    bg: '#fde5f3', text: '#7f1e5c' },
+      { id: 'indigo',  bg: '#e8ecff', text: '#2a368a' },
+      { id: 'teal',    bg: '#e4f8f7', text: '#145859' },
+      { id: 'stone',   bg: '#f5f2ee', text: '#5a5147' },
+    ];
+    const PALETTE_ICONS = {
+      violet: '🎯', sky: '💬', emerald: '✅', amber: '⭐',
+      rose: '❤️', orange: '🔥', pink: '🌸', indigo: '🔷', teal: '🌊', stone: '📋',
+    };
+
+    /* ═══════════════════════════════════════════════
+       CATEGORY SYSTEM — dynamic, user-editable
+    ═══════════════════════════════════════════════ */
+    // Color pairs available when creating/editing a category
+    const COLOR_PAIRS = [
+      { name: 'violet', bg: '#ede8ff', text: '#3d2f8a' },
+      { name: 'blue',   bg: '#e5effd', text: '#1a3f80' },
+      { name: 'green',  bg: '#e4f8ee', text: '#145035' },
+      { name: 'yellow', bg: '#fef7e2', text: '#6b4e17' },
+      { name: 'pink',   bg: '#fde4eb', text: '#7f2038' },
+      { name: 'orange', bg: '#fef0e4', text: '#7a3514' },
+      { name: 'rose',   bg: '#fde5f3', text: '#7f1e5c' },
+      { name: 'indigo', bg: '#e8ecff', text: '#2a368a' },
+      { name: 'teal',   bg: '#e4f8f7', text: '#145859' },
+      { name: 'stone',  bg: '#f5f2ee', text: '#5a5147' },
+      { name: 'red',    bg: '#fde8e8', text: '#7f1f1f' },
+      { name: 'lime',   bg: '#f0fde4', text: '#365314' },
+    ];
+
+    // Emoji presets for the icon picker
+    const EMOJI_PRESETS = [
+      '🎯','💼','📚','🏃','🍴','☕','💰','👥','🎵','📋',
+      '💡','🌱','✈️','🏥','🎨','🔧','📱','🏠','♡','⭐',
+      '🎓','🛒','🐾','🌙','💊','🎮','📝','🚗','🏋️','🧘',
+      '🍕','🧠','📷','🎤','🌍','🔑','📦','🎁','🌸','⚡',
+    ];
+
+    const DEFAULT_CATEGORIES = [
+      { id: 'work',     label: 'Work',     icon: '🎯', bg: '#ede8ff', text: '#3d2f8a' },
+      { id: 'meals',    label: 'Meals',    icon: '🍴', bg: '#fef7e2', text: '#6b4e17' },
+      { id: 'fitness',  label: 'Fitness',  icon: '🏃', bg: '#e4f8ee', text: '#145035' },
+      { id: 'admin',    label: 'Admin',    icon: '📋', bg: '#f5f2ee', text: '#5a5147' },
+      { id: 'personal', label: 'Personal', icon: '♡',  bg: '#fde4eb', text: '#7f2038' },
+      { id: 'meeting',  label: 'Meeting',  icon: '👥', bg: '#e5effd', text: '#1a3f80' },
+      { id: 'other',    label: 'Other',    icon: '📌', bg: '#fef0e4', text: '#7a3514' },
+    ];
+
+    // Look up a category from the live list; gracefully fall back to first
+    const getCat = (categories, id) =>
+      categories.find(c => c.id === id) || categories[0] || DEFAULT_CATEGORIES[0];
+
+    const BREAK_C = { bg: '#f5f2ee', text: '#6b6560', icon: '☕' };
+
+    const DEFAULT_TEMPLATES = [
+      { id: 'tpl-gym',   name: 'Gym',            duration: 90,  category: 'fitness' },
+      { id: 'tpl-lunch', name: 'Lunch',           duration: 45,  category: 'meals'   },
+      { id: 'tpl-email', name: 'Email Triage',    duration: 30,  category: 'admin'   },
+      { id: 'tpl-deep',  name: 'Deep Work Block', duration: 120, category: 'work'    },
+      { id: 'tpl-walk',  name: 'Walk',            duration: 20,  category: 'fitness' },
+    ];
+
+    const STORAGE_KEY = 'timeblock_v4';
+
+    const DEFAULTS = {
+      dayStart: 540, dayEnd: 1080,
+      buckets: [], tasks: [], fixedEvents: [],
+      schedule: [], overflow: [],
+      templates: DEFAULT_TEMPLATES,
+      categories: DEFAULT_CATEGORIES,
+    };
+
+    /* ═══════════════════════════════════════════════
+       UTILS
+    ═══════════════════════════════════════════════ */
+    let _n = 0;
+    const uid = () => `${Date.now()}-${++_n}`;
+    const pad2 = n => String(n).padStart(2, '0');
+
+    const fmtTime = m => {
+      const h = Math.floor(m / 60), min = m % 60;
+      const h12 = h > 12 ? h - 12 : (h === 0 ? 12 : h);
+      return `${h12}:${pad2(min)}`;
+    };
+    const fmtDur = m => {
+      if (m < 60) return `${m} min`;
+      const h = m / 60;
+      if (Number.isInteger(h)) return `${h} hr${h !== 1 ? 's' : ''}`;
+      return `${h} hrs`;
+    };
+    const inputToMins = s => { const [h, m] = s.split(':').map(Number); return h * 60 + (m || 0); };
+    const minsToInput = m => `${pad2(Math.floor(m / 60))}:${pad2(m % 60)}`;
+    const getColor = id => PALETTE.find(p => p.id === id) || PALETTE[0];
+    const colorPairIdx = (bg) => Math.max(0, COLOR_PAIRS.findIndex(p => p.bg === bg));
+
+    const loadData = () => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch { return null; } };
+    const saveData = d => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } catch {} };
+
+    /* ═══════════════════════════════════════════════
+       SCHEDULE ALGORITHM
+    ═══════════════════════════════════════════════ */
+    const buildSchedule = (buckets, tasks, fixedEvents, dayStart, dayEnd, categories) => {
+      const items = [];
+
+      for (const b of buckets) {
+        if (!b.subtasks.length) continue;
+        const pal = getColor(b.color);
+        const color = { bg: pal.bg, text: pal.text };
+        const icon = PALETTE_ICONS[b.color] || '📦';
+        if (!b.explode) {
+          const dur = b.subtasks.reduce((s, t) => s + t.duration, 0);
+          items.push({ id: uid(), type: 'bucket', bucketId: b.id, subtaskId: null, standaloneId: null,
+            label: b.name, duration: dur, icon, color,
+            priority: b.subtasks.some(t => t.priority === 'high') ? 'high' : 'normal' });
+        } else {
+          for (const st of b.subtasks) {
+            items.push({ id: uid(), type: 'subtask', bucketId: b.id, subtaskId: st.id, standaloneId: null,
+              label: `${b.name} · ${st.name}`, duration: st.duration, icon, color, priority: st.priority });
+          }
+        }
+      }
+
+      for (const t of tasks) {
+        const c = getCat(categories, t.category);
+        items.push({ id: uid(), type: 'standalone', bucketId: null, subtaskId: null, standaloneId: t.id,
+          label: t.name, duration: t.duration, icon: c.icon,
+          color: { bg: c.bg, text: c.text }, priority: t.priority });
+      }
+
+      const sorted = [...items.filter(i => i.priority === 'high'), ...items.filter(i => i.priority !== 'high')];
+
+      const fixedSorted = [...fixedEvents]
+        .filter(fe => fe.endTime > dayStart && fe.startTime < dayEnd)
+        .sort((a, b) => a.startTime - b.startTime);
+
+      const slots = [];
+      let cur = dayStart;
+      for (const fe of fixedSorted) {
+        if (fe.startTime > cur) slots.push({ start: cur, end: fe.startTime, cursor: cur });
+        cur = Math.max(cur, fe.endTime);
+      }
+      if (cur < dayEnd) slots.push({ start: cur, end: dayEnd, cursor: cur });
+
+      const scheduled = [], overflow = [];
+      for (const item of sorted) {
+        let placed = false;
+        for (const slot of slots) {
+          if (slot.cursor + item.duration <= slot.end) {
+            scheduled.push({ id: item.id, type: item.type, bucketId: item.bucketId,
+              subtaskId: item.subtaskId, standaloneId: item.standaloneId,
+              label: item.label, icon: item.icon, startTime: slot.cursor,
+              endTime: slot.cursor + item.duration, duration: item.duration,
+              done: false, color: item.color, locked: false });
+            slot.cursor += item.duration;
+            if (item.duration > 90 && slot.cursor < slot.end) {
+              const bd = Math.min(25, slot.end - slot.cursor);
+              if (bd >= 10) {
+                scheduled.push({ id: uid(), type: 'break', label: 'Break', icon: '☕',
+                  bucketId: null, subtaskId: null, standaloneId: null,
+                  startTime: slot.cursor, endTime: slot.cursor + bd, duration: bd,
+                  done: false, color: { bg: BREAK_C.bg, text: BREAK_C.text }, locked: false });
+                slot.cursor += bd;
+              }
+            }
+            placed = true; break;
+          }
+        }
+        if (!placed) overflow.push({ label: item.label, duration: item.duration });
+      }
+
+      const fixedBlocks = fixedSorted.map(fe => {
+        const c = getCat(categories, fe.category);
+        return { id: fe.id, type: 'fixed', label: fe.name, icon: c.icon, bucketId: null,
+          subtaskId: null, standaloneId: null, startTime: fe.startTime, endTime: fe.endTime,
+          duration: fe.endTime - fe.startTime, done: false,
+          color: { bg: c.bg, text: c.text }, locked: true };
+      });
+
+      return { schedule: [...fixedBlocks, ...scheduled].sort((a, b) => a.startTime - b.startTime), overflow };
+    };
+
+    const recalcTimes = (schedule, dayStart) => {
+      const fixed = schedule.filter(b => b.locked).sort((a, b) => a.startTime - b.startTime);
+      const movable = schedule.filter(b => !b.locked);
+      const slots = [];
+      let cur = dayStart;
+      for (const fe of fixed) {
+        if (fe.startTime > cur) slots.push({ start: cur, end: fe.startTime, cursor: cur });
+        cur = Math.max(cur, fe.endTime);
+      }
+      slots.push({ start: cur, end: Infinity, cursor: cur });
+      const result = [...fixed];
+      for (const block of movable) {
+        let placed = false;
+        for (const s of slots) {
+          if (s.cursor + block.duration <= s.end) {
+            result.push({ ...block, startTime: s.cursor, endTime: s.cursor + block.duration });
+            s.cursor += block.duration; placed = true; break;
+          }
+        }
+        if (!placed) result.push(block);
+      }
+      return result.sort((a, b) => a.startTime - b.startTime);
+    };
+
+    /* ═══════════════════════════════════════════════
+       MODAL
+    ═══════════════════════════════════════════════ */
+    function Modal({ title, onClose, children }) {
+      useEffect(() => {
+        const h = e => { if (e.key === 'Escape') onClose(); };
+        document.addEventListener('keydown', h);
+        return () => document.removeEventListener('keydown', h);
+      }, [onClose]);
+      return (
+        <div style={{ position:'fixed', inset:0, zIndex:50, display:'flex', alignItems:'center', justifyContent:'center' }}
+             className="modal-bg" onClick={onClose}>
+          <div style={{ width:'100%', maxWidth:500, margin:'0 16px', maxHeight:'90vh', overflowY:'auto',
+                        background:'#242424', border:'1px solid #3a3a3a', borderRadius:20 }}
+               onClick={e => e.stopPropagation()}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'18px 24px', borderBottom:'1px solid #2e2e2e' }}>
+              <span style={{ fontSize:15, fontWeight:700 }}>{title}</span>
+              <button onClick={onClose} style={{ background:'none', border:'none', color:'#555', fontSize:22, lineHeight:1, cursor:'pointer' }}>&times;</button>
+            </div>
+            <div style={{ padding:'20px 24px' }}>{children}</div>
+          </div>
+        </div>
+      );
+    }
+
+    const Label = ({ children }) => (
+      <div style={{ fontSize:11, fontWeight:700, color:'#555', textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:6 }}>{children}</div>
+    );
+
+    /* ═══════════════════════════════════════════════
+       CATEGORY MANAGER
+    ═══════════════════════════════════════════════ */
+    function CategoryManager({ categories, onChange, tasks, templates }) {
+      const [editId, setEditId]       = useState(null);
+      const [editLabel, setEditLabel] = useState('');
+      const [editIcon, setEditIcon]   = useState('');
+      const [editPairIdx, setEditPairIdx] = useState(0);
+
+      const [newLabel, setNewLabel]   = useState('');
+      const [newIcon, setNewIcon]     = useState('🎯');
+      const [newPairIdx, setNewPairIdx] = useState(0);
+
+      const usageCount = (catId) =>
+        tasks.filter(t => t.category === catId).length +
+        templates.filter(t => t.category === catId).length;
+
+      const startEdit = (cat) => {
+        setEditId(cat.id);
+        setEditLabel(cat.label);
+        setEditIcon(cat.icon);
+        setEditPairIdx(colorPairIdx(cat.bg));
+      };
+
+      const saveEdit = () => {
+        const pair = COLOR_PAIRS[editPairIdx];
+        onChange(categories.map(c =>
+          c.id === editId
+            ? { ...c, label: editLabel.trim() || c.label, icon: editIcon || c.icon, bg: pair.bg, text: pair.text }
+            : c
+        ));
+        setEditId(null);
+      };
+
+      const deleteCategory = (cat) => {
+        const count = usageCount(cat.id);
+        if (count > 0) {
+          alert(`"${cat.label}" is used by ${count} task${count > 1 ? 's' : ''}. Reassign or delete those tasks first.`);
+          return;
+        }
+        onChange(categories.filter(c => c.id !== cat.id));
+      };
+
+      const addCategory = () => {
+        if (!newLabel.trim()) return;
+        const pair = COLOR_PAIRS[newPairIdx];
+        onChange([...categories, { id: uid(), label: newLabel.trim(), icon: newIcon, bg: pair.bg, text: pair.text }]);
+        setNewLabel(''); setNewIcon('🎯'); setNewPairIdx(0);
+      };
+
+      const ColorPicker = ({ value, onChange: onCh }) => (
+        <div style={{ display:'flex', flexWrap:'wrap', gap:5 }}>
+          {COLOR_PAIRS.map((p, i) => (
+            <button key={p.name} onClick={() => onCh(i)} style={{
+              width:24, height:24, borderRadius:6, background:p.bg, border:'none', cursor:'pointer',
+              boxShadow: value === i ? `0 0 0 2px #191919, 0 0 0 3.5px ${p.text}` : 'none',
+              transform: value === i ? 'scale(1.15)' : 'scale(1)',
+              transition:'transform 0.1s, box-shadow 0.1s',
+            }} />
+          ))}
+        </div>
+      );
+
+      const EmojiPicker = ({ value, onChange: onCh }) => (
+        <div>
+          <div style={{ display:'flex', flexWrap:'wrap', gap:2, marginBottom:8 }}>
+            {EMOJI_PRESETS.map(e => (
+              <button key={e} onClick={() => onCh(e)}
+                className={`emoji-btn ${value === e ? 'selected' : ''}`}>{e}</button>
+            ))}
+          </div>
+          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+            <span style={{ fontSize:11, color:'#555', fontWeight:600, whiteSpace:'nowrap' }}>Or type:</span>
+            <input value={value} onChange={e => onCh(e.target.value)}
+              style={{ width:60, textAlign:'center', fontSize:18, padding:'4px 8px' }} maxLength={4} />
+          </div>
+        </div>
+      );
+
+      return (
+        <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+          {/* Existing categories */}
+          {categories.map(cat => {
+            const isEditing = editId === cat.id;
+            const count = usageCount(cat.id);
+            const curPair = COLOR_PAIRS[isEditing ? editPairIdx : colorPairIdx(cat.bg)] || COLOR_PAIRS[0];
+
+            if (isEditing) {
+              return (
+                <div key={cat.id} style={{ background:'#252525', borderRadius:14, padding:14, border:'1px solid #3a3a3a', display:'flex', flexDirection:'column', gap:12 }}>
+                  <div style={{ display:'flex', gap:10 }}>
+                    {/* Preview swatch */}
+                    <div style={{ width:40, height:40, borderRadius:10, background:curPair.bg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:20 }}>
+                      {editIcon}
+                    </div>
+                    <input value={editLabel} onChange={e => setEditLabel(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && saveEdit()}
+                      style={{ flex:1, fontWeight:700, fontSize:14 }}
+                      placeholder="Category name" autoFocus />
+                  </div>
+
+                  <div>
+                    <Label>Icon</Label>
+                    <EmojiPicker value={editIcon} onChange={setEditIcon} />
+                  </div>
+
+                  <div>
+                    <Label>Color</Label>
+                    <ColorPicker value={editPairIdx} onChange={setEditPairIdx} />
+                  </div>
+
+                  <div style={{ display:'flex', gap:8 }}>
+                    <button onClick={() => setEditId(null)} className="btn-ghost" style={{ flex:1 }}>Cancel</button>
+                    <button onClick={saveEdit} style={{ flex:1, padding:'8px', borderRadius:10, fontSize:13, fontWeight:700, background:curPair.bg, color:curPair.text, border:'none', cursor:'pointer' }}>
+                      Save changes
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+
+            return (
+              <div key={cat.id} className="group" style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 12px', borderRadius:12, background:'#222' }}>
+                {/* Swatch */}
+                <div style={{ width:32, height:32, borderRadius:8, background:cat.bg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:17 }}>
+                  {cat.icon}
+                </div>
+                <span style={{ flex:1, fontSize:13, fontWeight:700, color:'#f0f0f0' }}>{cat.label}</span>
+                {count > 0 && (
+                  <span style={{ fontSize:11, color:'#555', fontWeight:600 }}>{count} task{count !== 1 ? 's' : ''}</span>
+                )}
+                <button onClick={() => startEdit(cat)} className="group-hover-show"
+                  style={{ fontSize:12, padding:'4px 10px', borderRadius:8, background:'#2e2e2e', color:'#aaa', border:'none', cursor:'pointer', fontWeight:600 }}>
+                  Edit
+                </button>
+                <button onClick={() => deleteCategory(cat)} className="group-hover-show"
+                  style={{ background:'none', border:'none', cursor:'pointer', color:'#555', fontSize:16, lineHeight:1 }}
+                  onMouseEnter={e => e.target.style.color='#f87171'} onMouseLeave={e => e.target.style.color='#555'}>
+                  &times;
+                </button>
+              </div>
+            );
+          })}
+
+          {/* Add new category */}
+          <div style={{ background:'#1e1e1e', borderRadius:14, padding:14, border:'1px dashed #333', marginTop:6, display:'flex', flexDirection:'column', gap:12 }}>
+            <Label>New category</Label>
+
+            <div style={{ display:'flex', gap:10 }}>
+              <div style={{ width:40, height:40, borderRadius:10, background:COLOR_PAIRS[newPairIdx].bg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:20 }}>
+                {newIcon}
+              </div>
+              <input value={newLabel} onChange={e => setNewLabel(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && addCategory()}
+                style={{ flex:1, fontWeight:700, fontSize:14 }}
+                placeholder="Category name (e.g. Side Projects)" />
+            </div>
+
+            <div>
+              <Label>Icon</Label>
+              <EmojiPicker value={newIcon} onChange={setNewIcon} />
+            </div>
+
+            <div>
+              <Label>Color</Label>
+              <ColorPicker value={newPairIdx} onChange={setNewPairIdx} />
+            </div>
+
+            <button onClick={addCategory} disabled={!newLabel.trim()}
+              style={{ padding:'9px', borderRadius:10, fontSize:13, fontWeight:700, cursor:'pointer',
+                background: newLabel.trim() ? COLOR_PAIRS[newPairIdx].bg : '#2a2a2a',
+                color: newLabel.trim() ? COLOR_PAIRS[newPairIdx].text : '#555',
+                border:'none', opacity: newLabel.trim() ? 1 : 0.6,
+                transition:'background 0.15s, color 0.15s' }}>
+              + Add category
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    /* ═══════════════════════════════════════════════
+       BUCKET EDITOR
+    ═══════════════════════════════════════════════ */
+    function BucketEditor({ bucket, onSave, onClose }) {
+      const [name, setName]       = useState(bucket?.name || '');
+      const [color, setColor]     = useState(bucket?.color || PALETTE[0].id);
+      const [explode, setExplode] = useState(bucket?.explode ?? true);
+      const [subtasks, setSubs]   = useState(bucket?.subtasks ? [...bucket.subtasks] : []);
+      const [stName, setStName]   = useState(''); const [stDur, setStDur] = useState('30'); const [stPri, setStPri] = useState('normal');
+      const nameRef = useRef();
+      useEffect(() => nameRef.current?.focus(), []);
+
+      const addSub = () => {
+        const n = stName.trim(); if (!n) return;
+        setSubs(s => [...s, { id: uid(), name: n, duration: Math.max(5, parseInt(stDur) || 30), priority: stPri, done: false }]);
+        setStName(''); setStDur('30'); setStPri('normal');
+      };
+      const save = () => {
+        if (!name.trim()) return;
+        onSave({ id: bucket?.id || uid(), name: name.trim(), color, explode, subtasks });
+        onClose();
+      };
+      const pal = getColor(color);
+      const total = subtasks.reduce((s, t) => s + t.duration, 0);
+
+      return (
+        <Modal title={bucket ? 'Edit Bucket' : 'New Bucket'} onClose={onClose}>
+          <div style={{ display:'flex', flexDirection:'column', gap:18 }}>
+            <div>
+              <Label>Name</Label>
+              <input ref={nameRef} value={name} onChange={e => setName(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && save()} style={{ width:'100%' }}
+                placeholder="e.g. Job Search, Wedding, Personal" />
+            </div>
+
+            <div>
+              <Label>Color</Label>
+              <div style={{ display:'flex', flexWrap:'wrap', gap:8 }}>
+                {PALETTE.map(p => (
+                  <button key={p.id} onClick={() => setColor(p.id)} style={{
+                    width:32, height:32, borderRadius:8, background:p.bg, border:'none', cursor:'pointer',
+                    boxShadow: color === p.id ? `0 0 0 2px #191919, 0 0 0 4px ${p.text}` : 'none',
+                    transform: color === p.id ? 'scale(1.1)' : 'scale(1)',
+                    transition:'box-shadow 0.15s, transform 0.1s',
+                    display:'flex', alignItems:'center', justifyContent:'center',
+                  }}>
+                    {color === p.id && <div style={{ width:10, height:10, borderRadius:'50%', background:p.text }} />}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <Label>Schedule as</Label>
+              <div style={{ display:'flex', gap:8 }}>
+                {[[true,'Individual blocks'],[false,'One combined block']].map(([v, lbl]) => (
+                  <button key={String(v)} onClick={() => setExplode(v)} style={{
+                    flex:1, padding:'9px 12px', borderRadius:10, fontSize:13, fontWeight:600, cursor:'pointer',
+                    border: explode === v ? `1.5px solid ${pal.text}` : '1.5px solid #3a3a3a',
+                    background: explode === v ? pal.bg : 'transparent',
+                    color: explode === v ? pal.text : '#777',
+                  }}>{lbl}</button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <Label>Subtasks {total > 0 && <span style={{ fontWeight:400, textTransform:'none', color:'#555', marginLeft:4 }}>· {fmtDur(total)} total</span>}</Label>
+              <div style={{ display:'flex', flexDirection:'column', gap:5, marginBottom:10 }}>
+                {subtasks.map(st => (
+                  <div key={st.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', borderRadius:10, background:pal.bg }}>
+                    <div style={{ width:7, height:7, borderRadius:'50%', background:pal.text, flexShrink:0 }} />
+                    <span style={{ flex:1, fontSize:13, fontWeight:600, color:pal.text }}>{st.name}</span>
+                    <span style={{ fontSize:12, color:pal.text, opacity:0.6 }}>{fmtDur(st.duration)}</span>
+                    {st.priority === 'high' && <span style={{ fontSize:11, color:'#d97706', fontWeight:700 }}>⚡</span>}
+                    <button onClick={() => setSubs(s => s.filter(t => t.id !== st.id))}
+                      style={{ background:'none', border:'none', cursor:'pointer', color:'#aaa', fontSize:16, lineHeight:1 }}>&times;</button>
+                  </div>
+                ))}
+                {!subtasks.length && <p style={{ fontSize:13, color:'#555', fontStyle:'italic' }}>No subtasks yet.</p>}
+              </div>
+              <div style={{ background:'#2a2a2a', borderRadius:12, padding:12, display:'flex', flexDirection:'column', gap:8 }}>
+                <div style={{ display:'flex', gap:8 }}>
+                  <input value={stName} onChange={e => setStName(e.target.value)} onKeyDown={e => e.key === 'Enter' && addSub()}
+                    style={{ flex:1 }} placeholder="Subtask name" />
+                  <input type="number" value={stDur} onChange={e => setStDur(e.target.value)} min="5"
+                    style={{ width:70, textAlign:'center' }} placeholder="min" />
+                </div>
+                <div style={{ display:'flex', gap:8 }}>
+                  <select value={stPri} onChange={e => setStPri(e.target.value)} style={{ flex:1 }}>
+                    <option value="normal">Normal priority</option>
+                    <option value="high">⚡ High priority</option>
+                  </select>
+                  <button onClick={addSub} style={{ padding:'8px 18px', borderRadius:10, fontSize:13, fontWeight:700, background:pal.bg, color:pal.text, border:'none', cursor:'pointer' }}>+ Add</button>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display:'flex', gap:10, paddingTop:4 }}>
+              <button onClick={onClose} className="btn-ghost" style={{ flex:1 }}>Cancel</button>
+              <button onClick={save} disabled={!name.trim()} style={{ flex:1, padding:'10px', borderRadius:12, fontSize:13, fontWeight:700, background:pal.bg, color:pal.text, border:'none', cursor:'pointer', opacity:name.trim()?1:0.5 }}>
+                {bucket ? 'Save changes' : 'Create bucket'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      );
+    }
+
+    /* ═══════════════════════════════════════════════
+       BUCKET SIDEBAR
+    ═══════════════════════════════════════════════ */
+    function BucketSidebar({ buckets, schedule, onEdit, onDelete, onNew }) {
+      const progress = useMemo(() => {
+        const map = {};
+        for (const b of buckets) {
+          const total = b.subtasks.length;
+          if (!total) { map[b.id] = { total: 0, done: 0 }; continue; }
+          const bucketBlk = schedule.find(bl => bl.bucketId === b.id && bl.type === 'bucket');
+          let done = bucketBlk?.done ? total : 0;
+          if (!bucketBlk) done = b.subtasks.filter(st => schedule.find(bl => bl.subtaskId === st.id)?.done).length;
+          map[b.id] = { total, done };
+        }
+        return map;
+      }, [buckets, schedule]);
+
+      if (!buckets.length) return (
+        <div style={{ textAlign:'center', paddingTop:12 }}>
+          <p style={{ fontSize:12, color:'#444', marginBottom:12, fontStyle:'italic' }}>No buckets yet.</p>
+          <button onClick={onNew} style={{ width:'100%', padding:'10px', borderRadius:12, fontSize:13, fontWeight:600, color:'#666', background:'transparent', border:'1px dashed #3a3a3a', cursor:'pointer' }}
+            onMouseEnter={e => { e.target.style.color='#f0f0f0'; e.target.style.borderColor='#666'; }}
+            onMouseLeave={e => { e.target.style.color='#666'; e.target.style.borderColor='#3a3a3a'; }}>
+            + New bucket
+          </button>
+        </div>
+      );
+
+      return (
+        <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+          {buckets.map(b => {
+            const pal = getColor(b.color);
+            const prog = progress[b.id] || { total: 0, done: 0 };
+            const pct = prog.total ? Math.round(prog.done / prog.total * 100) : 0;
+            return (
+              <div key={b.id} className="group" style={{ background:pal.bg, borderRadius:12, padding:'10px 12px' }}>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: prog.total ? 6 : 0 }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:7, minWidth:0 }}>
+                    <div style={{ width:8, height:8, borderRadius:'50%', background:pal.text, flexShrink:0 }} />
+                    <span style={{ fontSize:12, fontWeight:700, color:pal.text, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{b.name}</span>
+                  </div>
+                  <div className="group-hover-show" style={{ display:'flex', gap:2, flexShrink:0, marginLeft:4 }}>
+                    <button onClick={() => onEdit(b)} style={{ background:'none', border:'none', cursor:'pointer', color:pal.text, opacity:0.5, fontSize:11, padding:'1px 3px' }}>✏</button>
+                    <button onClick={() => onDelete(b.id)} style={{ background:'none', border:'none', cursor:'pointer', color:pal.text, opacity:0.5, fontSize:14, lineHeight:1, padding:'1px 3px' }}>&times;</button>
+                  </div>
+                </div>
+                {prog.total > 0 && (
+                  <>
+                    <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, color:pal.text, opacity:0.6, marginBottom:4 }}>
+                      <span>{prog.done}/{prog.total} done</span><span>{pct}%</span>
+                    </div>
+                    <div style={{ height:3, borderRadius:99, background:`${pal.text}20`, overflow:'hidden' }}>
+                      <div className="progress-fill" style={{ height:'100%', borderRadius:99, background:pal.text, width:`${pct}%` }} />
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })}
+          <button onClick={onNew} style={{ width:'100%', padding:'9px', borderRadius:12, fontSize:12, fontWeight:600, color:'#555', background:'transparent', border:'1px dashed #333', cursor:'pointer', marginTop:2 }}
+            onMouseEnter={e => { e.target.style.color='#f0f0f0'; e.target.style.borderColor='#666'; }}
+            onMouseLeave={e => { e.target.style.color='#555'; e.target.style.borderColor='#333'; }}>
+            + New bucket
+          </button>
+        </div>
+      );
+    }
+
+    /* ═══════════════════════════════════════════════
+       TASKS PANEL
+    ═══════════════════════════════════════════════ */
+    function TasksPanel({ buckets, tasks, fixedEvents, templates, schedule, categories,
+        onAddTask, onDeleteTask, onAddFixed, onDeleteFixed,
+        onNewBucket, onEditBucket, onDeleteBucket,
+        onUseTemplate, onDeleteTemplate, onAddTemplate,
+        onCategoriesChange }) {
+
+      const [tab, setTab] = useState('buckets');
+      const [tName, setTName] = useState(''); const [tDur, setTDur] = useState('30');
+      const [tCat, setTCat]   = useState(() => categories[0]?.id || 'work');
+      const [tPri, setTPri]   = useState('normal');
+      const [feName, setFeName] = useState(''); const [feStart, setFeStart] = useState('09:00');
+      const [feEnd, setFeEnd]   = useState('10:00');
+      const [feCat, setFeCat]   = useState(() => categories[0]?.id || 'work');
+      const [tmName, setTmName] = useState(''); const [tmDur, setTmDur] = useState('30');
+      const [tmCat, setTmCat]   = useState(() => categories[0]?.id || 'work');
+
+      const addTask = () => {
+        const n = tName.trim(); if (!n) return;
+        onAddTask({ id: uid(), name: n, duration: Math.max(5, parseInt(tDur) || 30), category: tCat, priority: tPri, done: false });
+        setTName('');
+      };
+      const addFixed = () => {
+        const n = feName.trim(); if (!n) return;
+        const s = inputToMins(feStart), e = inputToMins(feEnd);
+        if (e <= s) return;
+        onAddFixed({ id: uid(), name: n, startTime: s, endTime: e, category: feCat });
+        setFeName('');
+      };
+      const saveTpl = () => {
+        const n = tmName.trim(); if (!n) return;
+        onAddTemplate({ id: uid(), name: n, duration: Math.max(5, parseInt(tmDur) || 30), category: tmCat });
+        setTmName('');
+      };
+
+      const CatSelect = ({ value, onChange: onCh, style }) => (
+        <select value={value} onChange={e => onCh(e.target.value)} style={style}>
+          {categories.map(c => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}
+        </select>
+      );
+
+      const itemCard = (cat) => ({
+        display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
+        borderRadius:12, background:cat.bg,
+      });
+
+      const tabs = [
+        ['buckets','Buckets'], ['tasks','Tasks'],
+        ['fixed','Fixed Events'], ['templates','Templates'], ['categories','Categories'],
+      ];
+
+      return (
+        <div>
+          <div style={{ display:'flex', gap:20, borderBottom:'1px solid #2a2a2a', marginBottom:24, flexWrap:'wrap' }}>
+            {tabs.map(([id, lbl]) => {
+              const counts = { buckets: buckets.length, tasks: tasks.length, fixed: fixedEvents.length, templates: 0, categories: 0 };
+              return (
+                <button key={id} onClick={() => setTab(id)} className={`tab-btn ${tab===id?'active':''}`}>
+                  {lbl}
+                  {counts[id] > 0 && <span style={{ marginLeft:5, fontSize:10, background:'#2e2e2e', color:'#777', padding:'1px 6px', borderRadius:99, fontWeight:700 }}>{counts[id]}</span>}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* ── BUCKETS ── */}
+          {tab === 'buckets' && (
+            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              {buckets.map(b => {
+                const pal = getColor(b.color);
+                const dur = b.subtasks.reduce((s, t) => s + t.duration, 0);
+                return (
+                  <div key={b.id} className="group" style={{ background:pal.bg, borderLeft:`4px solid ${pal.text}44`, borderRadius:14, padding:14 }}>
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+                        <span style={{ fontSize:14, fontWeight:700, color:pal.text }}>{b.name}</span>
+                        {b.subtasks.length > 0 && <span style={{ fontSize:11, padding:'2px 8px', borderRadius:99, background:`${pal.text}18`, color:pal.text, fontWeight:700 }}>{b.subtasks.length} tasks · {fmtDur(dur)}</span>}
+                        <span style={{ fontSize:11, padding:'2px 8px', borderRadius:99, background:`${pal.text}10`, color:pal.text, opacity:0.7, fontWeight:600 }}>{b.explode ? 'Individual' : 'One block'}</span>
+                      </div>
+                      <div style={{ display:'flex', gap:4 }}>
+                        <button onClick={() => onEditBucket(b)} style={{ fontSize:12, padding:'4px 10px', borderRadius:8, background:`${pal.text}15`, color:pal.text, border:'none', cursor:'pointer', fontWeight:600 }}>Edit</button>
+                        <button onClick={() => onDeleteBucket(b.id)} style={{ fontSize:13, padding:'4px 8px', borderRadius:8, background:'transparent', color:pal.text, opacity:0.5, border:'none', cursor:'pointer' }}>&times;</button>
+                      </div>
+                    </div>
+                    <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                      {b.subtasks.map(st => (
+                        <div key={st.id} style={{ display:'flex', alignItems:'center', gap:8, fontSize:13, color:pal.text, opacity:0.75 }}>
+                          <span style={{ width:5, height:5, borderRadius:'50%', background:pal.text, flexShrink:0, opacity:0.6 }} />
+                          <span style={{ flex:1 }}>{st.name}</span>
+                          <span style={{ fontSize:11, opacity:0.7 }}>{fmtDur(st.duration)}</span>
+                          {st.priority === 'high' && <span style={{ fontSize:11, color:'#d97706', fontWeight:700 }}>⚡</span>}
+                        </div>
+                      ))}
+                      {!b.subtasks.length && <p style={{ fontSize:12, color:pal.text, opacity:0.5, fontStyle:'italic' }}>No subtasks — click Edit to add some.</p>}
+                    </div>
+                  </div>
+                );
+              })}
+              <button onClick={onNewBucket} style={{ padding:'12px', borderRadius:14, fontSize:13, fontWeight:600, color:'#555', background:'transparent', border:'1px dashed #333', cursor:'pointer' }}
+                onMouseEnter={e => { e.target.style.color='#f0f0f0'; e.target.style.borderColor='#666'; }}
+                onMouseLeave={e => { e.target.style.color='#555'; e.target.style.borderColor='#333'; }}>
+                + New bucket
+              </button>
+            </div>
+          )}
+
+          {/* ── TASKS ── */}
+          {tab === 'tasks' && (
+            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              <div style={{ background:'#222', borderRadius:16, padding:16, border:'1px solid #2e2e2e', display:'flex', flexDirection:'column', gap:10 }}>
+                <Label>Add task</Label>
+                <div style={{ display:'flex', gap:8 }}>
+                  <input value={tName} onChange={e => setTName(e.target.value)} onKeyDown={e => e.key==='Enter'&&addTask()}
+                    style={{ flex:1 }} placeholder="Task name" />
+                  <input type="number" value={tDur} onChange={e => setTDur(e.target.value)} min="5"
+                    style={{ width:70, textAlign:'center' }} placeholder="min" />
+                </div>
+                <div style={{ display:'flex', gap:8 }}>
+                  <CatSelect value={tCat} onChange={setTCat} style={{ flex:1 }} />
+                  <select value={tPri} onChange={e => setTPri(e.target.value)}>
+                    <option value="normal">Normal</option>
+                    <option value="high">⚡ High</option>
+                  </select>
+                  <button onClick={addTask} style={{ padding:'8px 18px', borderRadius:10, fontSize:13, fontWeight:700, background:'#f5f2ee', color:'#2a2520', border:'none', cursor:'pointer' }}>Add</button>
+                </div>
+              </div>
+              {tasks.map(t => {
+                const c = getCat(categories, t.category);
+                return (
+                  <div key={t.id} className="group" style={{ ...itemCard(c), borderLeft:`3px solid ${c.text}44` }}>
+                    <span style={{ fontSize:15 }}>{c.icon}</span>
+                    <div style={{ flex:1, minWidth:0 }}>
+                      <span style={{ fontSize:13, fontWeight:600, color:c.text }}>{t.name}</span>
+                      <span style={{ fontSize:12, color:c.text, opacity:0.55, marginLeft:8 }}>{fmtDur(t.duration)}</span>
+                    </div>
+                    <span style={{ fontSize:11, padding:'2px 8px', borderRadius:99, background:`${c.text}18`, color:c.text, fontWeight:700, flexShrink:0 }}>{c.label}</span>
+                    {t.priority === 'high' && <span style={{ fontSize:11, color:'#d97706', fontWeight:700, flexShrink:0 }}>⚡ High</span>}
+                    <button onClick={() => onDeleteTask(t.id)} className="group-hover-show"
+                      style={{ background:'none', border:'none', cursor:'pointer', color:c.text, opacity:0.4, fontSize:16, lineHeight:1 }}>&times;</button>
+                  </div>
+                );
+              })}
+              {!tasks.length && <p style={{ fontSize:13, color:'#444', textAlign:'center', fontStyle:'italic', padding:'12px 0' }}>No tasks yet.</p>}
+            </div>
+          )}
+
+          {/* ── FIXED EVENTS ── */}
+          {tab === 'fixed' && (
+            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              <div style={{ background:'#222', borderRadius:16, padding:16, border:'1px solid #2e2e2e', display:'flex', flexDirection:'column', gap:10 }}>
+                <Label>Add existing event</Label>
+                <input value={feName} onChange={e => setFeName(e.target.value)} onKeyDown={e => e.key==='Enter'&&addFixed()}
+                  style={{ width:'100%' }} placeholder="e.g. Team standup, Doctor appt, Class" />
+                <div style={{ display:'flex', gap:8, alignItems:'flex-end' }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:11, color:'#555', marginBottom:5, fontWeight:600 }}>Start</div>
+                    <input type="time" value={feStart} onChange={e => setFeStart(e.target.value)} style={{ width:'100%' }} />
+                  </div>
+                  <div style={{ color:'#444', paddingBottom:10, fontWeight:700 }}>→</div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:11, color:'#555', marginBottom:5, fontWeight:600 }}>End</div>
+                    <input type="time" value={feEnd} onChange={e => setFeEnd(e.target.value)} style={{ width:'100%' }} />
+                  </div>
+                </div>
+                <div style={{ display:'flex', gap:8 }}>
+                  <CatSelect value={feCat} onChange={setFeCat} style={{ flex:1 }} />
+                  <button onClick={addFixed} style={{ padding:'8px 18px', borderRadius:10, fontSize:13, fontWeight:700, background:'#f5f2ee', color:'#2a2520', border:'none', cursor:'pointer' }}>Add</button>
+                </div>
+              </div>
+              {[...fixedEvents].sort((a,b) => a.startTime - b.startTime).map(fe => {
+                const c = getCat(categories, fe.category);
+                return (
+                  <div key={fe.id} className="group" style={{ ...itemCard(c), borderLeft:`3px solid ${c.text}44` }}>
+                    <span style={{ fontSize:15 }}>{c.icon}</span>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:13, fontWeight:700, color:c.text }}>{fe.name}</div>
+                      <div style={{ fontSize:11, color:c.text, opacity:0.6, marginTop:2 }}>
+                        {fmtTime(fe.startTime)} – {fmtTime(fe.endTime)} · {fmtDur(fe.endTime - fe.startTime)}
+                      </div>
+                    </div>
+                    <span style={{ fontSize:10, padding:'2px 7px', borderRadius:99, background:`${c.text}15`, color:c.text, fontWeight:700, flexShrink:0 }}>FIXED</span>
+                    <button onClick={() => onDeleteFixed(fe.id)} className="group-hover-show"
+                      style={{ background:'none', border:'none', cursor:'pointer', color:c.text, opacity:0.4, fontSize:16, lineHeight:1 }}>&times;</button>
+                  </div>
+                );
+              })}
+              {!fixedEvents.length && <p style={{ fontSize:13, color:'#444', textAlign:'center', fontStyle:'italic', padding:'8px 0' }}>No fixed events yet.</p>}
+            </div>
+          )}
+
+          {/* ── TEMPLATES ── */}
+          {tab === 'templates' && (
+            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              {templates.map(t => {
+                const c = getCat(categories, t.category);
+                return (
+                  <div key={t.id} className="group" style={{ ...itemCard(c) }}>
+                    <span style={{ fontSize:15 }}>{c.icon}</span>
+                    <span style={{ flex:1, fontSize:13, fontWeight:600, color:c.text }}>{t.name}</span>
+                    <span style={{ fontSize:11, color:c.text, opacity:0.55 }}>{fmtDur(t.duration)}</span>
+                    <button onClick={() => onUseTemplate(t)} style={{ fontSize:12, padding:'4px 12px', borderRadius:8, background:`${c.text}18`, color:c.text, border:'none', cursor:'pointer', fontWeight:700 }}>Use</button>
+                    <button onClick={() => onDeleteTemplate(t.id)} className="group-hover-show"
+                      style={{ background:'none', border:'none', cursor:'pointer', color:c.text, opacity:0.4, fontSize:16, lineHeight:1 }}>&times;</button>
+                  </div>
+                );
+              })}
+              {!templates.length && <p style={{ fontSize:13, color:'#444', textAlign:'center', fontStyle:'italic', padding:'8px 0' }}>No templates.</p>}
+              <div style={{ background:'#222', borderRadius:14, padding:14, border:'1px solid #2e2e2e', display:'flex', flexDirection:'column', gap:8, marginTop:4 }}>
+                <Label>Save new template</Label>
+                <div style={{ display:'flex', gap:8 }}>
+                  <input value={tmName} onChange={e => setTmName(e.target.value)} onKeyDown={e => e.key==='Enter'&&saveTpl()}
+                    style={{ flex:1 }} placeholder="Name" />
+                  <input type="number" value={tmDur} onChange={e => setTmDur(e.target.value)} min="5"
+                    style={{ width:70, textAlign:'center' }} />
+                </div>
+                <div style={{ display:'flex', gap:8 }}>
+                  <CatSelect value={tmCat} onChange={setTmCat} style={{ flex:1 }} />
+                  <button onClick={saveTpl} style={{ padding:'8px 18px', borderRadius:10, fontSize:13, fontWeight:700, background:'#f5f2ee', color:'#2a2520', border:'none', cursor:'pointer' }}>Save</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── CATEGORIES ── */}
+          {tab === 'categories' && (
+            <CategoryManager
+              categories={categories}
+              onChange={onCategoriesChange}
+              tasks={tasks}
+              templates={templates}
+            />
+          )}
+        </div>
+      );
+    }
+
+    /* ═══════════════════════════════════════════════
+       TIMELINE BLOCK
+    ═══════════════════════════════════════════════ */
+    function TimelineBlock({ block, index, onToggleDone, onDelete,
+        dragIdx, dragOverIdx, onDragStart, onDragOver, onDrop, onDragEnd }) {
+      const isFixed = block.locked;
+      const isBreak = block.type === 'break';
+      const isDragging = dragIdx === index;
+      const isOver = dragOverIdx === index && dragIdx !== index;
+      const minH = Math.max(block.duration * 1.2, 64);
+
+      return (
+        <div
+          draggable={!isFixed}
+          onDragStart={e => !isFixed && onDragStart(e, index)}
+          onDragOver={e => onDragOver(e, index)}
+          onDrop={e => onDrop(e, index)}
+          onDragEnd={onDragEnd}
+          className={`block-card ${isDragging ? 'is-dragging' : ''} ${isOver ? 'drag-over' : ''}`}
+          style={{ minHeight: minH, borderRadius:14, background:block.color.bg,
+            display:'flex', alignItems:'center', padding:'14px 18px', gap:12 }}
+        >
+          {!isFixed && <span className="drag-handle" style={{ color:`${block.color.text}30`, fontSize:16, flexShrink:0, lineHeight:1 }}>⠿</span>}
+          <span style={{ fontSize:17, flexShrink:0, lineHeight:1 }}>{isFixed ? '🔒' : block.icon}</span>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:15, fontWeight:700, color:block.color.text, lineHeight:1.3, marginBottom:4,
+              textDecoration: block.done ? 'line-through' : 'none', opacity: block.done ? 0.45 : 1 }}>
+              {isBreak ? 'Break' : block.label}
+              {isFixed && <span style={{ fontSize:10, marginLeft:8, padding:'2px 7px', borderRadius:99, background:`${block.color.text}15`, fontWeight:700 }}>FIXED</span>}
+            </div>
+            <div style={{ fontSize:12, color:block.color.text, opacity:0.55, fontWeight:500 }}>
+              {fmtTime(block.startTime)} – {fmtTime(block.endTime)} · {fmtDur(block.duration)}
+              {isBreak && <span style={{ fontStyle:'italic', marginLeft:4 }}>(suggested)</span>}
+            </div>
+          </div>
+          <button onClick={() => onToggleDone(index)} style={{
+            background:'none', border:'none', cursor:'pointer', fontSize:12, fontWeight:700, flexShrink:0,
+            color:block.color.text, opacity: block.done ? 0.9 : 0.3, transition:'opacity 0.15s', padding:'4px 0 4px 12px',
+          }}
+            onMouseEnter={e => e.target.style.opacity='0.8'}
+            onMouseLeave={e => e.target.style.opacity=block.done?'0.9':'0.3'}
+          >{block.done ? '✓ done' : 'done'}</button>
+          <button onClick={() => onDelete(index)} className="group-hover-show"
+            style={{ background:'none', border:'none', cursor:'pointer', color:block.color.text, opacity:0.25, fontSize:18, lineHeight:1, flexShrink:0 }}
+            onMouseEnter={e => e.target.style.opacity='0.7'} onMouseLeave={e => e.target.style.opacity='0.25'}>&times;</button>
+        </div>
+      );
+    }
+
+    /* ═══════════════════════════════════════════════
+       SCHEDULE VIEW
+    ═══════════════════════════════════════════════ */
+    function ScheduleView({ schedule, overflow, dayStart, onToggleDone, onDeleteBlock, onReorder }) {
+      const dragIdxRef = useRef(null);
+      const [dragIdx, setDragIdx] = useState(null);
+      const [dragOverIdx, setDragOverIdx] = useState(null);
+
+      const doneCount = schedule.filter(b => b.done).length;
+      const total = schedule.length;
+      const pct = total ? Math.round(doneCount / total * 100) : 0;
+
+      const onDragStart = (e, i) => { dragIdxRef.current = i; setDragIdx(i); e.dataTransfer.effectAllowed = 'move'; };
+      const onDragOver  = (e, i) => { e.preventDefault(); setDragOverIdx(i); };
+      const onDrop = (e, ti) => {
+        e.preventDefault();
+        const si = dragIdxRef.current;
+        if (si === null || si === ti) return;
+        const next = [...schedule]; const [item] = next.splice(si, 1); next.splice(ti, 0, item);
+        onReorder(next); setDragIdx(null); setDragOverIdx(null); dragIdxRef.current = null;
+      };
+      const onDragEnd = () => { setDragIdx(null); setDragOverIdx(null); dragIdxRef.current = null; };
+
+      if (!schedule.length) return (
+        <div style={{ textAlign:'center', paddingTop:80 }}>
+          <div style={{ fontSize:52, marginBottom:16 }}>📅</div>
+          <p style={{ color:'#777', fontSize:16, fontWeight:600 }}>No schedule yet.</p>
+          <p style={{ color:'#444', fontSize:13, marginTop:6 }}>Add tasks, then click <strong style={{color:'#888'}}>Generate Schedule</strong>.</p>
+        </div>
+      );
+
+      return (
+        <div style={{ maxWidth:700 }}>
+          <div style={{ background:'#222', borderRadius:16, padding:'14px 18px', border:'1px solid #2e2e2e', marginBottom:20 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10, fontSize:13 }}>
+              <span style={{ fontWeight:700 }}>Today's progress</span>
+              <span style={{ fontWeight:800, color:'#aaa' }}>{doneCount} / {total} · {pct}%</span>
+            </div>
+            <div style={{ height:5, borderRadius:99, background:'#2e2e2e', overflow:'hidden' }}>
+              <div className="progress-fill" style={{ height:'100%', borderRadius:99, background:'#e5e5e5', width:`${pct}%` }} />
+            </div>
+          </div>
+
+          {overflow.length > 0 && (
+            <div style={{ background:'#2a1a1a', borderRadius:16, padding:16, border:'1px solid #4a2020', marginBottom:16 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+                <span style={{ fontSize:15 }}>⚠️</span>
+                <span style={{ fontSize:13, fontWeight:700, color:'#f87171' }}>{overflow.length} task{overflow.length > 1?'s':''} didn't fit</span>
+              </div>
+              {overflow.map((t, i) => (
+                <div key={i} className="overflow-bar" style={{ paddingLeft:12, paddingBottom:4, paddingTop:4, marginBottom:4, fontSize:13, color:'#fca5a5' }}>
+                  <strong>{t.label}</strong> · {fmtDur(t.duration)}
+                </div>
+              ))}
+              <p style={{ fontSize:11, color:'#7a4040', marginTop:8 }}>Extend your end time or remove lower-priority tasks.</p>
+            </div>
+          )}
+
+          <div style={{ display:'flex', flexDirection:'column', gap:8 }} className="group">
+            {schedule.map((block, i) => (
+              <div key={block.id} style={{ display:'flex', alignItems:'flex-start', gap:14 }}>
+                <div style={{ width:42, flexShrink:0, paddingTop:20, fontSize:12, fontWeight:600, color:'#444', textAlign:'right', fontVariantNumeric:'tabular-nums' }}>
+                  {fmtTime(block.startTime)}
+                </div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <TimelineBlock block={block} index={i}
+                    onToggleDone={onToggleDone} onDelete={onDeleteBlock}
+                    dragIdx={dragIdx} dragOverIdx={dragOverIdx}
+                    onDragStart={onDragStart} onDragOver={onDragOver}
+                    onDrop={onDrop} onDragEnd={onDragEnd} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    /* ═══════════════════════════════════════════════
+       HEADER
+    ═══════════════════════════════════════════════ */
+    function Header({ dayStart, dayEnd, onDayStart, onDayEnd, onGenerate, onClear, hasSchedule }) {
+      return (
+        <header style={{ background:'#202020', borderBottom:'1px solid #2a2a2a', padding:'12px 20px', display:'flex', alignItems:'center', gap:16, flexWrap:'wrap', position:'sticky', top:0, zIndex:20 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            <span style={{ fontSize:20 }}>🗓</span>
+            <h1 style={{ margin:0, fontSize:17, fontWeight:900, letterSpacing:'-0.02em' }}>TimeBlock</h1>
+          </div>
+          <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8, background:'#2a2a2a', borderRadius:10, padding:'6px 12px', border:'1px solid #383838' }}>
+              <span style={{ fontSize:10, fontWeight:800, color:'#555', letterSpacing:'0.06em' }}>FROM</span>
+              <input type="time" value={minsToInput(dayStart)} onChange={e => onDayStart(inputToMins(e.target.value))}
+                style={{ fontSize:13, fontWeight:700, background:'transparent', border:'none', color:'#f0f0f0', outline:'none', width:80, padding:0 }} />
+            </div>
+            <span style={{ color:'#3a3a3a', fontWeight:800 }}>→</span>
+            <div style={{ display:'flex', alignItems:'center', gap:8, background:'#2a2a2a', borderRadius:10, padding:'6px 12px', border:'1px solid #383838' }}>
+              <span style={{ fontSize:10, fontWeight:800, color:'#555', letterSpacing:'0.06em' }}>TO</span>
+              <input type="time" value={minsToInput(dayEnd)} onChange={e => onDayEnd(inputToMins(e.target.value))}
+                style={{ fontSize:13, fontWeight:700, background:'transparent', border:'none', color:'#f0f0f0', outline:'none', width:80, padding:0 }} />
+            </div>
+            <span style={{ fontSize:12, color:'#444', fontWeight:600 }}>{fmtDur(dayEnd - dayStart)} available</span>
+          </div>
+          <div style={{ display:'flex', gap:8, marginLeft:'auto' }}>
+            {hasSchedule && <button onClick={onClear} className="btn-ghost">Clear</button>}
+            <button onClick={onGenerate} style={{
+              padding:'8px 20px', borderRadius:10, fontSize:13, fontWeight:800,
+              background:'#f5f2ee', color:'#1a1814', border:'none', cursor:'pointer',
+              boxShadow:'0 1px 4px rgba(0,0,0,0.3)', transition:'background 0.15s, box-shadow 0.15s, transform 0.1s',
+            }}
+              onMouseEnter={e => { e.target.style.background='#fff'; e.target.style.transform='translateY(-1px)'; }}
+              onMouseLeave={e => { e.target.style.background='#f5f2ee'; e.target.style.transform='translateY(0)'; }}
+            >Generate Schedule ✨</button>
+          </div>
+        </header>
+      );
+    }
+
+    /* ═══════════════════════════════════════════════
+       APP
+    ═══════════════════════════════════════════════ */
+    function App() {
+      const saved = useMemo(() => loadData(), []);
+      const [dayStart,    setDayStart]  = useState(saved?.dayStart    ?? DEFAULTS.dayStart);
+      const [dayEnd,      setDayEnd]    = useState(saved?.dayEnd      ?? DEFAULTS.dayEnd);
+      const [buckets,     setBuckets]   = useState(saved?.buckets     ?? DEFAULTS.buckets);
+      const [tasks,       setTasks]     = useState(saved?.tasks       ?? DEFAULTS.tasks);
+      const [fixedEvents, setFixed]     = useState(saved?.fixedEvents ?? DEFAULTS.fixedEvents);
+      const [schedule,    setSchedule]  = useState(saved?.schedule    ?? DEFAULTS.schedule);
+      const [overflow,    setOverflow]  = useState(saved?.overflow    ?? DEFAULTS.overflow);
+      const [templates,   setTemplates] = useState(saved?.templates   ?? DEFAULTS.templates);
+      const [categories,  setCategories] = useState(saved?.categories ?? DEFAULTS.categories);
+      const [view,        setView]      = useState('tasks');
+      const [editBucket,  setEditBucket] = useState(null);
+      const [showNewBkt,  setShowNewBkt] = useState(false);
+
+      useEffect(() => {
+        saveData({ dayStart, dayEnd, buckets, tasks, fixedEvents, schedule, overflow, templates, categories });
+      }, [dayStart, dayEnd, buckets, tasks, fixedEvents, schedule, overflow, templates, categories]);
+
+      const handleGenerate = () => {
+        const r = buildSchedule(buckets, tasks, fixedEvents, dayStart, dayEnd, categories);
+        setSchedule(r.schedule); setOverflow(r.overflow); setView('schedule');
+      };
+      const handleClear = () => { setSchedule([]); setOverflow([]); };
+      const handleToggleDone = idx => setSchedule(prev => { const n=[...prev]; n[idx]={...n[idx],done:!n[idx].done}; return n; });
+      const handleDeleteBlock = idx => setSchedule(prev => recalcTimes(prev.filter((_,i)=>i!==idx), dayStart));
+      const handleReorder = next => setSchedule(recalcTimes(next, dayStart));
+      const handleSaveBucket = b => setBuckets(prev => { const i=prev.findIndex(x=>x.id===b.id); if(i>=0){const n=[...prev];n[i]=b;return n;} return [...prev,b]; });
+      const handleDeleteBucket = id => setBuckets(prev => prev.filter(b=>b.id!==id));
+      const handleAddTask = t => setTasks(prev => [...prev, t]);
+      const handleDeleteTask = id => setTasks(prev => prev.filter(t=>t.id!==id));
+      const handleAddFixed = fe => setFixed(prev => [...prev, fe]);
+      const handleDeleteFixed = id => setFixed(prev => prev.filter(f=>f.id!==id));
+      const handleUseTemplate = tpl => handleAddTask({ id:uid(), name:tpl.name, duration:tpl.duration, category:tpl.category, priority:'normal', done:false });
+      const handleDeleteTemplate = id => setTemplates(prev => prev.filter(t=>t.id!==id));
+      const handleAddTemplate = tpl => setTemplates(prev => [...prev, tpl]);
+
+      const doneCount = schedule.filter(b => b.done).length;
+
+      return (
+        <div style={{ display:'flex', flexDirection:'column', height:'100vh' }}>
+          <Header dayStart={dayStart} dayEnd={dayEnd}
+            onDayStart={setDayStart} onDayEnd={setDayEnd}
+            onGenerate={handleGenerate} onClear={handleClear}
+            hasSchedule={schedule.length > 0} />
+
+          <div style={{ display:'flex', flex:1, overflow:'hidden' }}>
+            <aside style={{ width:210, flexShrink:0, background:'#202020', borderRight:'1px solid #2a2a2a', display:'flex', flexDirection:'column', overflow:'hidden' }}>
+              <div style={{ padding:'14px 14px 10px', borderBottom:'1px solid #252525' }}>
+                <span style={{ fontSize:10, fontWeight:800, color:'#444', textTransform:'uppercase', letterSpacing:'0.09em' }}>Buckets</span>
+              </div>
+              <div style={{ flex:1, overflowY:'auto', padding:10 }}>
+                <BucketSidebar buckets={buckets} schedule={schedule}
+                  onEdit={b => setEditBucket(b)} onDelete={handleDeleteBucket}
+                  onNew={() => setShowNewBkt(true)} />
+              </div>
+            </aside>
+
+            <main style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', background:'#191919' }}>
+              <div style={{ background:'#202020', borderBottom:'1px solid #2a2a2a', padding:'0 24px', display:'flex', gap:24 }}>
+                {[['tasks','Tasks'],['schedule','Schedule']].map(([id,lbl]) => (
+                  <button key={id} onClick={() => setView(id)} className={`tab-btn ${view===id?'active':''}`}>
+                    {lbl}
+                    {id==='schedule' && schedule.length > 0 && (
+                      <span style={{ marginLeft:6, fontSize:10, background:'#2e2e2e', color:'#777', padding:'1px 6px', borderRadius:99, fontWeight:700 }}>
+                        {doneCount}/{schedule.length}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              <div style={{ flex:1, overflowY:'auto', padding:'24px 28px' }}>
+                {view === 'tasks' && (
+                  <div style={{ maxWidth:680 }}>
+                    <TasksPanel
+                      buckets={buckets} tasks={tasks} fixedEvents={fixedEvents}
+                      templates={templates} schedule={schedule} categories={categories}
+                      onAddTask={handleAddTask} onDeleteTask={handleDeleteTask}
+                      onAddFixed={handleAddFixed} onDeleteFixed={handleDeleteFixed}
+                      onNewBucket={() => setShowNewBkt(true)}
+                      onEditBucket={b => setEditBucket(b)} onDeleteBucket={handleDeleteBucket}
+                      onUseTemplate={handleUseTemplate}
+                      onDeleteTemplate={handleDeleteTemplate} onAddTemplate={handleAddTemplate}
+                      onCategoriesChange={setCategories}
+                    />
+                  </div>
+                )}
+                {view === 'schedule' && (
+                  <ScheduleView schedule={schedule} overflow={overflow} dayStart={dayStart}
+                    onToggleDone={handleToggleDone} onDeleteBlock={handleDeleteBlock}
+                    onReorder={handleReorder} />
+                )}
+              </div>
+            </main>
+          </div>
+
+          {(showNewBkt || editBucket) && (
+            <BucketEditor bucket={editBucket}
+              onSave={b => { handleSaveBucket(b); setEditBucket(null); setShowNewBkt(false); }}
+              onClose={() => { setEditBucket(null); setShowNewBkt(false); }} />
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
