@@ -7,6 +7,7 @@
   <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #191919; color: #f0f0f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
@@ -49,7 +50,29 @@
     const { useState, useEffect, useRef, useMemo } = React;
 
     /* ═══════════════════════════════════════════════
-       BUCKET PALETTE (for bucket color picker)
+       SUPABASE CONFIG
+       Fill these in after setting up your project at supabase.com
+    ═══════════════════════════════════════════════ */
+    const SUPABASE_URL = 'https://ulkbrmjyhrlifmrybrgj.supabase.co';
+    const SUPABASE_KEY = 'sb_publishable_Z3thZi4xGZP0UzqwoN5-gQ_LwlUYJsz';
+    const sb = !SUPABASE_URL.startsWith('YOUR')
+      ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
+      : null;
+
+    const loadCloud = async uid => {
+      try {
+        const { data } = await sb.from('timeblock_data').select('data').eq('user_id', uid).single();
+        return data?.data ?? null;
+      } catch { return null; }
+    };
+    const saveCloud = async (uid, data) => {
+      try {
+        await sb.from('timeblock_data').upsert({ user_id: uid, data, updated_at: new Date().toISOString() });
+      } catch {}
+    };
+
+    /* ═══════════════════════════════════════════════
+       BUCKET PALETTE
     ═══════════════════════════════════════════════ */
     const PALETTE = [
       { id: 'violet',  bg: '#ede8ff', text: '#3d2f8a' },
@@ -69,9 +92,8 @@
     };
 
     /* ═══════════════════════════════════════════════
-       CATEGORY SYSTEM — dynamic, user-editable
+       CATEGORY SYSTEM
     ═══════════════════════════════════════════════ */
-    // Color pairs available when creating/editing a category
     const COLOR_PAIRS = [
       { name: 'violet', bg: '#ede8ff', text: '#3d2f8a' },
       { name: 'blue',   bg: '#e5effd', text: '#1a3f80' },
@@ -87,7 +109,6 @@
       { name: 'lime',   bg: '#f0fde4', text: '#365314' },
     ];
 
-    // Emoji presets for the icon picker
     const EMOJI_PRESETS = [
       '🎯','💼','📚','🏃','🍴','☕','💰','👥','🎵','📋',
       '💡','🌱','✈️','🏥','🎨','🔧','📱','🏠','♡','⭐',
@@ -105,7 +126,6 @@
       { id: 'other',    label: 'Other',    icon: '📌', bg: '#fef0e4', text: '#7a3514' },
     ];
 
-    // Look up a category from the live list; gracefully fall back to first
     const getCat = (categories, id) =>
       categories.find(c => c.id === id) || categories[0] || DEFAULT_CATEGORIES[0];
 
@@ -263,6 +283,81 @@
     };
 
     /* ═══════════════════════════════════════════════
+       LOGIN SCREEN
+    ═══════════════════════════════════════════════ */
+    function LoginScreen() {
+      const [mode, setMode]       = useState('login');
+      const [email, setEmail]     = useState('');
+      const [password, setPass]   = useState('');
+      const [error, setError]     = useState('');
+      const [loading, setLoading] = useState(false);
+      const [msg, setMsg]         = useState('');
+
+      const submit = async () => {
+        if (!email.trim() || !password) { setError('Please enter your email and password.'); return; }
+        setError(''); setMsg(''); setLoading(true);
+        try {
+          if (mode === 'signup') {
+            const { error: e } = await sb.auth.signUp({ email: email.trim(), password });
+            if (e) throw e;
+            setMsg('Account created! Check your email to confirm it, then sign in.');
+            setMode('login');
+          } else {
+            const { error: e } = await sb.auth.signInWithPassword({ email: email.trim(), password });
+            if (e) throw e;
+          }
+        } catch (e) { setError(e.message); }
+        setLoading(false);
+      };
+
+      return (
+        <div style={{ minHeight:'100vh', background:'#191919', display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+          <div style={{ width:'100%', maxWidth:360 }}>
+            <div style={{ textAlign:'center', marginBottom:32 }}>
+              <div style={{ fontSize:44, marginBottom:10 }}>🗓</div>
+              <h1 style={{ fontSize:26, fontWeight:900, color:'#f0f0f0', letterSpacing:'-0.03em', margin:0 }}>TimeBlock</h1>
+              <p style={{ color:'#444', fontSize:14, marginTop:6, fontWeight:500 }}>Your personal day planner</p>
+            </div>
+            <div style={{ background:'#232323', border:'1px solid #2e2e2e', borderRadius:20, padding:28 }}>
+              <div style={{ display:'flex', background:'#191919', borderRadius:12, padding:3, marginBottom:22 }}>
+                {[['login','Sign in'],['signup','Sign up']].map(([m, lbl]) => (
+                  <button key={m} onClick={() => { setMode(m); setError(''); setMsg(''); }}
+                    style={{ flex:1, padding:'8px', borderRadius:9, fontSize:13, fontWeight:700, border:'none', cursor:'pointer',
+                      background: mode===m ? '#2e2e2e' : 'transparent',
+                      color: mode===m ? '#f0f0f0' : '#555', transition:'all 0.15s' }}>
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+              <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+                <div>
+                  <div style={{ fontSize:11, fontWeight:700, color:'#555', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:6 }}>Email</div>
+                  <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                    onKeyDown={e => e.key==='Enter' && submit()} style={{ width:'100%' }}
+                    placeholder="you@example.com" autoFocus />
+                </div>
+                <div>
+                  <div style={{ fontSize:11, fontWeight:700, color:'#555', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:6 }}>Password</div>
+                  <input type="password" value={password} onChange={e => setPass(e.target.value)}
+                    onKeyDown={e => e.key==='Enter' && submit()} style={{ width:'100%' }}
+                    placeholder="••••••••" />
+                </div>
+                {error && <div style={{ background:'#2a1818', border:'1px solid #4a2222', borderRadius:10, padding:'10px 14px', fontSize:13, color:'#f87171', lineHeight:1.4 }}>{error}</div>}
+                {msg   && <div style={{ background:'#182a1a', border:'1px solid #224a26', borderRadius:10, padding:'10px 14px', fontSize:13, color:'#86efac', lineHeight:1.4 }}>{msg}</div>}
+                <button onClick={submit} disabled={loading}
+                  style={{ marginTop:2, padding:'12px', borderRadius:12, fontSize:14, fontWeight:800,
+                    background:'#f5f2ee', color:'#1a1814', border:'none', cursor:loading?'default':'pointer',
+                    opacity:loading?0.6:1, transition:'opacity 0.15s' }}>
+                  {loading ? 'Please wait…' : mode==='login' ? 'Sign in →' : 'Create account →'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* ═══════════════════════════════════════════════
        MODAL
     ═══════════════════════════════════════════════ */
     function Modal({ title, onClose, children }) {
@@ -295,23 +390,20 @@
        CATEGORY MANAGER
     ═══════════════════════════════════════════════ */
     function CategoryManager({ categories, onChange, tasks, templates }) {
-      const [editId, setEditId]       = useState(null);
-      const [editLabel, setEditLabel] = useState('');
-      const [editIcon, setEditIcon]   = useState('');
+      const [editId, setEditId]           = useState(null);
+      const [editLabel, setEditLabel]     = useState('');
+      const [editIcon, setEditIcon]       = useState('');
       const [editPairIdx, setEditPairIdx] = useState(0);
-
-      const [newLabel, setNewLabel]   = useState('');
-      const [newIcon, setNewIcon]     = useState('🎯');
-      const [newPairIdx, setNewPairIdx] = useState(0);
+      const [newLabel, setNewLabel]       = useState('');
+      const [newIcon, setNewIcon]         = useState('🎯');
+      const [newPairIdx, setNewPairIdx]   = useState(0);
 
       const usageCount = (catId) =>
         tasks.filter(t => t.category === catId).length +
         templates.filter(t => t.category === catId).length;
 
       const startEdit = (cat) => {
-        setEditId(cat.id);
-        setEditLabel(cat.label);
-        setEditIcon(cat.icon);
+        setEditId(cat.id); setEditLabel(cat.label); setEditIcon(cat.icon);
         setEditPairIdx(colorPairIdx(cat.bg));
       };
 
@@ -327,10 +419,7 @@
 
       const deleteCategory = (cat) => {
         const count = usageCount(cat.id);
-        if (count > 0) {
-          alert(`"${cat.label}" is used by ${count} task${count > 1 ? 's' : ''}. Reassign or delete those tasks first.`);
-          return;
-        }
+        if (count > 0) { alert(`"${cat.label}" is used by ${count} task${count > 1 ? 's' : ''}. Reassign or delete those tasks first.`); return; }
         onChange(categories.filter(c => c.id !== cat.id));
       };
 
@@ -372,7 +461,6 @@
 
       return (
         <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-          {/* Existing categories */}
           {categories.map(cat => {
             const isEditing = editId === cat.id;
             const count = usageCount(cat.id);
@@ -382,31 +470,16 @@
               return (
                 <div key={cat.id} style={{ background:'#252525', borderRadius:14, padding:14, border:'1px solid #3a3a3a', display:'flex', flexDirection:'column', gap:12 }}>
                   <div style={{ display:'flex', gap:10 }}>
-                    {/* Preview swatch */}
-                    <div style={{ width:40, height:40, borderRadius:10, background:curPair.bg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:20 }}>
-                      {editIcon}
-                    </div>
+                    <div style={{ width:40, height:40, borderRadius:10, background:curPair.bg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:20 }}>{editIcon}</div>
                     <input value={editLabel} onChange={e => setEditLabel(e.target.value)}
                       onKeyDown={e => e.key === 'Enter' && saveEdit()}
-                      style={{ flex:1, fontWeight:700, fontSize:14 }}
-                      placeholder="Category name" autoFocus />
+                      style={{ flex:1, fontWeight:700, fontSize:14 }} placeholder="Category name" autoFocus />
                   </div>
-
-                  <div>
-                    <Label>Icon</Label>
-                    <EmojiPicker value={editIcon} onChange={setEditIcon} />
-                  </div>
-
-                  <div>
-                    <Label>Color</Label>
-                    <ColorPicker value={editPairIdx} onChange={setEditPairIdx} />
-                  </div>
-
+                  <div><Label>Icon</Label><EmojiPicker value={editIcon} onChange={setEditIcon} /></div>
+                  <div><Label>Color</Label><ColorPicker value={editPairIdx} onChange={setEditPairIdx} /></div>
                   <div style={{ display:'flex', gap:8 }}>
                     <button onClick={() => setEditId(null)} className="btn-ghost" style={{ flex:1 }}>Cancel</button>
-                    <button onClick={saveEdit} style={{ flex:1, padding:'8px', borderRadius:10, fontSize:13, fontWeight:700, background:curPair.bg, color:curPair.text, border:'none', cursor:'pointer' }}>
-                      Save changes
-                    </button>
+                    <button onClick={saveEdit} style={{ flex:1, padding:'8px', borderRadius:10, fontSize:13, fontWeight:700, background:curPair.bg, color:curPair.text, border:'none', cursor:'pointer' }}>Save changes</button>
                   </div>
                 </div>
               );
@@ -414,57 +487,33 @@
 
             return (
               <div key={cat.id} className="group" style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 12px', borderRadius:12, background:'#222' }}>
-                {/* Swatch */}
-                <div style={{ width:32, height:32, borderRadius:8, background:cat.bg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:17 }}>
-                  {cat.icon}
-                </div>
+                <div style={{ width:32, height:32, borderRadius:8, background:cat.bg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:17 }}>{cat.icon}</div>
                 <span style={{ flex:1, fontSize:13, fontWeight:700, color:'#f0f0f0' }}>{cat.label}</span>
-                {count > 0 && (
-                  <span style={{ fontSize:11, color:'#555', fontWeight:600 }}>{count} task{count !== 1 ? 's' : ''}</span>
-                )}
+                {count > 0 && <span style={{ fontSize:11, color:'#555', fontWeight:600 }}>{count} task{count !== 1 ? 's' : ''}</span>}
                 <button onClick={() => startEdit(cat)} className="group-hover-show"
-                  style={{ fontSize:12, padding:'4px 10px', borderRadius:8, background:'#2e2e2e', color:'#aaa', border:'none', cursor:'pointer', fontWeight:600 }}>
-                  Edit
-                </button>
+                  style={{ fontSize:12, padding:'4px 10px', borderRadius:8, background:'#2e2e2e', color:'#aaa', border:'none', cursor:'pointer', fontWeight:600 }}>Edit</button>
                 <button onClick={() => deleteCategory(cat)} className="group-hover-show"
                   style={{ background:'none', border:'none', cursor:'pointer', color:'#555', fontSize:16, lineHeight:1 }}
-                  onMouseEnter={e => e.target.style.color='#f87171'} onMouseLeave={e => e.target.style.color='#555'}>
-                  &times;
-                </button>
+                  onMouseEnter={e => e.target.style.color='#f87171'} onMouseLeave={e => e.target.style.color='#555'}>&times;</button>
               </div>
             );
           })}
 
-          {/* Add new category */}
           <div style={{ background:'#1e1e1e', borderRadius:14, padding:14, border:'1px dashed #333', marginTop:6, display:'flex', flexDirection:'column', gap:12 }}>
             <Label>New category</Label>
-
             <div style={{ display:'flex', gap:10 }}>
-              <div style={{ width:40, height:40, borderRadius:10, background:COLOR_PAIRS[newPairIdx].bg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:20 }}>
-                {newIcon}
-              </div>
+              <div style={{ width:40, height:40, borderRadius:10, background:COLOR_PAIRS[newPairIdx].bg, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0, fontSize:20 }}>{newIcon}</div>
               <input value={newLabel} onChange={e => setNewLabel(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && addCategory()}
-                style={{ flex:1, fontWeight:700, fontSize:14 }}
-                placeholder="Category name (e.g. Side Projects)" />
+                style={{ flex:1, fontWeight:700, fontSize:14 }} placeholder="Category name (e.g. Side Projects)" />
             </div>
-
-            <div>
-              <Label>Icon</Label>
-              <EmojiPicker value={newIcon} onChange={setNewIcon} />
-            </div>
-
-            <div>
-              <Label>Color</Label>
-              <ColorPicker value={newPairIdx} onChange={setNewPairIdx} />
-            </div>
-
+            <div><Label>Icon</Label><EmojiPicker value={newIcon} onChange={setNewIcon} /></div>
+            <div><Label>Color</Label><ColorPicker value={newPairIdx} onChange={setNewPairIdx} /></div>
             <button onClick={addCategory} disabled={!newLabel.trim()}
               style={{ padding:'9px', borderRadius:10, fontSize:13, fontWeight:700, cursor:'pointer',
                 background: newLabel.trim() ? COLOR_PAIRS[newPairIdx].bg : '#2a2a2a',
                 color: newLabel.trim() ? COLOR_PAIRS[newPairIdx].text : '#555',
-                border:'none', opacity: newLabel.trim() ? 1 : 0.6,
-                transition:'background 0.15s, color 0.15s' }}>
+                border:'none', opacity: newLabel.trim() ? 1 : 0.6, transition:'background 0.15s, color 0.15s' }}>
               + Add category
             </button>
           </div>
@@ -480,7 +529,9 @@
       const [color, setColor]     = useState(bucket?.color || PALETTE[0].id);
       const [explode, setExplode] = useState(bucket?.explode ?? true);
       const [subtasks, setSubs]   = useState(bucket?.subtasks ? [...bucket.subtasks] : []);
-      const [stName, setStName]   = useState(''); const [stDur, setStDur] = useState('30'); const [stPri, setStPri] = useState('normal');
+      const [stName, setStName]   = useState('');
+      const [stDur, setStDur]     = useState('30');
+      const [stPri, setStPri]     = useState('normal');
       const nameRef = useRef();
       useEffect(() => nameRef.current?.focus(), []);
 
@@ -506,7 +557,6 @@
                 onKeyDown={e => e.key === 'Enter' && save()} style={{ width:'100%' }}
                 placeholder="e.g. Job Search, Wedding, Personal" />
             </div>
-
             <div>
               <Label>Color</Label>
               <div style={{ display:'flex', flexWrap:'wrap', gap:8 }}>
@@ -523,7 +573,6 @@
                 ))}
               </div>
             </div>
-
             <div>
               <Label>Schedule as</Label>
               <div style={{ display:'flex', gap:8 }}>
@@ -537,7 +586,6 @@
                 ))}
               </div>
             </div>
-
             <div>
               <Label>Subtasks {total > 0 && <span style={{ fontWeight:400, textTransform:'none', color:'#555', marginLeft:4 }}>· {fmtDur(total)} total</span>}</Label>
               <div style={{ display:'flex', flexDirection:'column', gap:5, marginBottom:10 }}>
@@ -569,7 +617,6 @@
                 </div>
               </div>
             </div>
-
             <div style={{ display:'flex', gap:10, paddingTop:4 }}>
               <button onClick={onClose} className="btn-ghost" style={{ flex:1 }}>Cancel</button>
               <button onClick={save} disabled={!name.trim()} style={{ flex:1, padding:'10px', borderRadius:12, fontSize:13, fontWeight:700, background:pal.bg, color:pal.text, border:'none', cursor:'pointer', opacity:name.trim()?1:0.5 }}>
@@ -578,74 +625,6 @@
             </div>
           </div>
         </Modal>
-      );
-    }
-
-    /* ═══════════════════════════════════════════════
-       BUCKET SIDEBAR
-    ═══════════════════════════════════════════════ */
-    function BucketSidebar({ buckets, schedule, onEdit, onDelete, onNew }) {
-      const progress = useMemo(() => {
-        const map = {};
-        for (const b of buckets) {
-          const total = b.subtasks.length;
-          if (!total) { map[b.id] = { total: 0, done: 0 }; continue; }
-          const bucketBlk = schedule.find(bl => bl.bucketId === b.id && bl.type === 'bucket');
-          let done = bucketBlk?.done ? total : 0;
-          if (!bucketBlk) done = b.subtasks.filter(st => schedule.find(bl => bl.subtaskId === st.id)?.done).length;
-          map[b.id] = { total, done };
-        }
-        return map;
-      }, [buckets, schedule]);
-
-      if (!buckets.length) return (
-        <div style={{ textAlign:'center', paddingTop:12 }}>
-          <p style={{ fontSize:12, color:'#444', marginBottom:12, fontStyle:'italic' }}>No buckets yet.</p>
-          <button onClick={onNew} style={{ width:'100%', padding:'10px', borderRadius:12, fontSize:13, fontWeight:600, color:'#666', background:'transparent', border:'1px dashed #3a3a3a', cursor:'pointer' }}
-            onMouseEnter={e => { e.target.style.color='#f0f0f0'; e.target.style.borderColor='#666'; }}
-            onMouseLeave={e => { e.target.style.color='#666'; e.target.style.borderColor='#3a3a3a'; }}>
-            + New bucket
-          </button>
-        </div>
-      );
-
-      return (
-        <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-          {buckets.map(b => {
-            const pal = getColor(b.color);
-            const prog = progress[b.id] || { total: 0, done: 0 };
-            const pct = prog.total ? Math.round(prog.done / prog.total * 100) : 0;
-            return (
-              <div key={b.id} className="group" style={{ background:pal.bg, borderRadius:12, padding:'10px 12px' }}>
-                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: prog.total ? 6 : 0 }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:7, minWidth:0 }}>
-                    <div style={{ width:8, height:8, borderRadius:'50%', background:pal.text, flexShrink:0 }} />
-                    <span style={{ fontSize:12, fontWeight:700, color:pal.text, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{b.name}</span>
-                  </div>
-                  <div className="group-hover-show" style={{ display:'flex', gap:2, flexShrink:0, marginLeft:4 }}>
-                    <button onClick={() => onEdit(b)} style={{ background:'none', border:'none', cursor:'pointer', color:pal.text, opacity:0.5, fontSize:11, padding:'1px 3px' }}>✏</button>
-                    <button onClick={() => onDelete(b.id)} style={{ background:'none', border:'none', cursor:'pointer', color:pal.text, opacity:0.5, fontSize:14, lineHeight:1, padding:'1px 3px' }}>&times;</button>
-                  </div>
-                </div>
-                {prog.total > 0 && (
-                  <>
-                    <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, color:pal.text, opacity:0.6, marginBottom:4 }}>
-                      <span>{prog.done}/{prog.total} done</span><span>{pct}%</span>
-                    </div>
-                    <div style={{ height:3, borderRadius:99, background:`${pal.text}20`, overflow:'hidden' }}>
-                      <div className="progress-fill" style={{ height:'100%', borderRadius:99, background:pal.text, width:`${pct}%` }} />
-                    </div>
-                  </>
-                )}
-              </div>
-            );
-          })}
-          <button onClick={onNew} style={{ width:'100%', padding:'9px', borderRadius:12, fontSize:12, fontWeight:600, color:'#555', background:'transparent', border:'1px dashed #333', cursor:'pointer', marginTop:2 }}
-            onMouseEnter={e => { e.target.style.color='#f0f0f0'; e.target.style.borderColor='#666'; }}
-            onMouseLeave={e => { e.target.style.color='#555'; e.target.style.borderColor='#333'; }}>
-            + New bucket
-          </button>
-        </div>
       );
     }
 
@@ -693,8 +672,7 @@
       );
 
       const itemCard = (cat) => ({
-        display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
-        borderRadius:12, background:cat.bg,
+        display:'flex', alignItems:'center', gap:10, padding:'10px 14px', borderRadius:12, background:cat.bg,
       });
 
       const tabs = [
@@ -716,7 +694,6 @@
             })}
           </div>
 
-          {/* ── BUCKETS ── */}
           {tab === 'buckets' && (
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
               {buckets.map(b => {
@@ -757,7 +734,6 @@
             </div>
           )}
 
-          {/* ── TASKS ── */}
           {tab === 'tasks' && (
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
               <div style={{ background:'#222', borderRadius:16, padding:16, border:'1px solid #2e2e2e', display:'flex', flexDirection:'column', gap:10 }}>
@@ -797,7 +773,6 @@
             </div>
           )}
 
-          {/* ── FIXED EVENTS ── */}
           {tab === 'fixed' && (
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
               <div style={{ background:'#222', borderRadius:16, padding:16, border:'1px solid #2e2e2e', display:'flex', flexDirection:'column', gap:10 }}>
@@ -841,7 +816,6 @@
             </div>
           )}
 
-          {/* ── TEMPLATES ── */}
           {tab === 'templates' && (
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
               {templates.map(t => {
@@ -874,14 +848,8 @@
             </div>
           )}
 
-          {/* ── CATEGORIES ── */}
           {tab === 'categories' && (
-            <CategoryManager
-              categories={categories}
-              onChange={onCategoriesChange}
-              tasks={tasks}
-              templates={templates}
-            />
+            <CategoryManager categories={categories} onChange={onCategoriesChange} tasks={tasks} templates={templates} />
           )}
         </div>
       );
@@ -1017,7 +985,7 @@
     /* ═══════════════════════════════════════════════
        HEADER
     ═══════════════════════════════════════════════ */
-    function Header({ dayStart, dayEnd, onDayStart, onDayEnd, onGenerate, onClear, hasSchedule }) {
+    function Header({ dayStart, dayEnd, onDayStart, onDayEnd, onGenerate, onClear, hasSchedule, user, onSignOut }) {
       return (
         <header style={{ background:'#202020', borderBottom:'1px solid #2a2a2a', padding:'12px 20px', display:'flex', alignItems:'center', gap:16, flexWrap:'wrap', position:'sticky', top:0, zIndex:20 }}>
           <div style={{ display:'flex', alignItems:'center', gap:8 }}>
@@ -1038,15 +1006,21 @@
             </div>
             <span style={{ fontSize:12, color:'#444', fontWeight:600 }}>{fmtDur(dayEnd - dayStart)} available</span>
           </div>
-          <div style={{ display:'flex', gap:8, marginLeft:'auto' }}>
+          <div style={{ display:'flex', gap:8, marginLeft:'auto', alignItems:'center' }}>
+            {user && (
+              <>
+                <span style={{ fontSize:12, color:'#444', fontWeight:500, maxWidth:180, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{user.email}</span>
+                <button onClick={onSignOut} className="btn-ghost" style={{ fontSize:12, padding:'6px 12px' }}>Sign out</button>
+              </>
+            )}
             {hasSchedule && <button onClick={onClear} className="btn-ghost">Clear</button>}
             <button onClick={onGenerate} style={{
               padding:'8px 20px', borderRadius:10, fontSize:13, fontWeight:800,
               background:'#f5f2ee', color:'#1a1814', border:'none', cursor:'pointer',
               boxShadow:'0 1px 4px rgba(0,0,0,0.3)', transition:'background 0.15s, box-shadow 0.15s, transform 0.1s',
             }}
-              onMouseEnter={e => { e.target.style.background='#fff'; e.target.style.transform='translateY(-1px)'; }}
-              onMouseLeave={e => { e.target.style.background='#f5f2ee'; e.target.style.transform='translateY(0)'; }}
+              onMouseEnter={e => { e.currentTarget.style.background='#fff'; e.currentTarget.style.transform='translateY(-1px)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background='#f5f2ee'; e.currentTarget.style.transform='translateY(0)'; }}
             >Generate Schedule ✨</button>
           </div>
         </header>
@@ -1057,100 +1031,157 @@
        APP
     ═══════════════════════════════════════════════ */
     function App() {
+      // undefined = checking session, null = logged out, object = logged in
+      const [user, setUser]       = useState(undefined);
+      const [syncing, setSyncing] = useState(false);
+
       const saved = useMemo(() => loadData(), []);
-      const [dayStart,    setDayStart]  = useState(saved?.dayStart    ?? DEFAULTS.dayStart);
-      const [dayEnd,      setDayEnd]    = useState(saved?.dayEnd      ?? DEFAULTS.dayEnd);
-      const [buckets,     setBuckets]   = useState(saved?.buckets     ?? DEFAULTS.buckets);
-      const [tasks,       setTasks]     = useState(saved?.tasks       ?? DEFAULTS.tasks);
-      const [fixedEvents, setFixed]     = useState(saved?.fixedEvents ?? DEFAULTS.fixedEvents);
-      const [schedule,    setSchedule]  = useState(saved?.schedule    ?? DEFAULTS.schedule);
-      const [overflow,    setOverflow]  = useState(saved?.overflow    ?? DEFAULTS.overflow);
-      const [templates,   setTemplates] = useState(saved?.templates   ?? DEFAULTS.templates);
-      const [categories,  setCategories] = useState(saved?.categories ?? DEFAULTS.categories);
-      const [view,        setView]      = useState('tasks');
+      const [dayStart,    setDayStart]   = useState(saved?.dayStart    ?? DEFAULTS.dayStart);
+      const [dayEnd,      setDayEnd]     = useState(saved?.dayEnd      ?? DEFAULTS.dayEnd);
+      const [buckets,     setBuckets]    = useState(saved?.buckets     ?? DEFAULTS.buckets);
+      const [tasks,       setTasks]      = useState(saved?.tasks       ?? DEFAULTS.tasks);
+      const [fixedEvents, setFixed]      = useState(saved?.fixedEvents ?? DEFAULTS.fixedEvents);
+      const [schedule,    setSchedule]   = useState(saved?.schedule    ?? DEFAULTS.schedule);
+      const [overflow,    setOverflow]   = useState(saved?.overflow    ?? DEFAULTS.overflow);
+      const [templates,   setTemplates]  = useState(saved?.templates   ?? DEFAULTS.templates);
+      const [categories,  setCategories] = useState(saved?.categories  ?? DEFAULTS.categories);
+      const [view,        setView]       = useState('tasks');
       const [editBucket,  setEditBucket] = useState(null);
       const [showNewBkt,  setShowNewBkt] = useState(false);
 
+      const cloudReady = useRef(false);
+      const saveTimer  = useRef(null);
+
+      // Auth session setup
       useEffect(() => {
-        saveData({ dayStart, dayEnd, buckets, tasks, fixedEvents, schedule, overflow, templates, categories });
+        if (!sb) { setUser(null); return; }
+        sb.auth.getSession().then(({ data: { session } }) => {
+          setUser(session?.user ?? null);
+        });
+        const { data: { subscription } } = sb.auth.onAuthStateChange((_ev, session) => {
+          cloudReady.current = false;
+          setUser(session?.user ?? null);
+        });
+        return () => subscription.unsubscribe();
+      }, []);
+
+      // Load cloud data when user logs in
+      useEffect(() => {
+        if (!user || !sb) return;
+        setSyncing(true);
+        loadCloud(user.id).then(data => {
+          if (data) {
+            if (data.dayStart    != null) setDayStart(data.dayStart);
+            if (data.dayEnd      != null) setDayEnd(data.dayEnd);
+            if (data.buckets)    setBuckets(data.buckets);
+            if (data.tasks)      setTasks(data.tasks);
+            if (data.fixedEvents) setFixed(data.fixedEvents);
+            if (data.schedule)   setSchedule(data.schedule);
+            if (data.overflow)   setOverflow(data.overflow);
+            if (data.templates)  setTemplates(data.templates);
+            if (data.categories) setCategories(data.categories);
+          }
+          cloudReady.current = true;
+          setSyncing(false);
+        });
+      }, [user?.id]);
+
+      // Save to localStorage + debounced cloud save
+      useEffect(() => {
+        const d = { dayStart, dayEnd, buckets, tasks, fixedEvents, schedule, overflow, templates, categories };
+        saveData(d);
+        if (user && sb && cloudReady.current) {
+          clearTimeout(saveTimer.current);
+          saveTimer.current = setTimeout(() => saveCloud(user.id, d), 1500);
+        }
       }, [dayStart, dayEnd, buckets, tasks, fixedEvents, schedule, overflow, templates, categories]);
+
+      const handleSignOut = async () => {
+        clearTimeout(saveTimer.current);
+        cloudReady.current = false;
+        if (sb) await sb.auth.signOut();
+      };
 
       const handleGenerate = () => {
         const r = buildSchedule(buckets, tasks, fixedEvents, dayStart, dayEnd, categories);
         setSchedule(r.schedule); setOverflow(r.overflow); setView('schedule');
       };
-      const handleClear = () => { setSchedule([]); setOverflow([]); };
-      const handleToggleDone = idx => setSchedule(prev => { const n=[...prev]; n[idx]={...n[idx],done:!n[idx].done}; return n; });
-      const handleDeleteBlock = idx => setSchedule(prev => recalcTimes(prev.filter((_,i)=>i!==idx), dayStart));
-      const handleReorder = next => setSchedule(recalcTimes(next, dayStart));
-      const handleSaveBucket = b => setBuckets(prev => { const i=prev.findIndex(x=>x.id===b.id); if(i>=0){const n=[...prev];n[i]=b;return n;} return [...prev,b]; });
-      const handleDeleteBucket = id => setBuckets(prev => prev.filter(b=>b.id!==id));
-      const handleAddTask = t => setTasks(prev => [...prev, t]);
-      const handleDeleteTask = id => setTasks(prev => prev.filter(t=>t.id!==id));
-      const handleAddFixed = fe => setFixed(prev => [...prev, fe]);
-      const handleDeleteFixed = id => setFixed(prev => prev.filter(f=>f.id!==id));
-      const handleUseTemplate = tpl => handleAddTask({ id:uid(), name:tpl.name, duration:tpl.duration, category:tpl.category, priority:'normal', done:false });
+      const handleClear          = () => { setSchedule([]); setOverflow([]); };
+      const handleToggleDone     = idx => setSchedule(prev => { const n=[...prev]; n[idx]={...n[idx],done:!n[idx].done}; return n; });
+      const handleDeleteBlock    = idx => setSchedule(prev => recalcTimes(prev.filter((_,i)=>i!==idx), dayStart));
+      const handleReorder        = next => setSchedule(recalcTimes(next, dayStart));
+      const handleSaveBucket     = b => setBuckets(prev => { const i=prev.findIndex(x=>x.id===b.id); if(i>=0){const n=[...prev];n[i]=b;return n;} return [...prev,b]; });
+      const handleDeleteBucket   = id => setBuckets(prev => prev.filter(b=>b.id!==id));
+      const handleAddTask        = t => setTasks(prev => [...prev, t]);
+      const handleDeleteTask     = id => setTasks(prev => prev.filter(t=>t.id!==id));
+      const handleAddFixed       = fe => setFixed(prev => [...prev, fe]);
+      const handleDeleteFixed    = id => setFixed(prev => prev.filter(f=>f.id!==id));
+      const handleUseTemplate    = tpl => handleAddTask({ id:uid(), name:tpl.name, duration:tpl.duration, category:tpl.category, priority:'normal', done:false });
       const handleDeleteTemplate = id => setTemplates(prev => prev.filter(t=>t.id!==id));
-      const handleAddTemplate = tpl => setTemplates(prev => [...prev, tpl]);
+      const handleAddTemplate    = tpl => setTemplates(prev => [...prev, tpl]);
 
       const doneCount = schedule.filter(b => b.done).length;
+
+      // Checking auth session
+      if (user === undefined) return (
+        <div style={{ minHeight:'100vh', background:'#191919', display:'flex', alignItems:'center', justifyContent:'center' }}>
+          <span style={{ color:'#444', fontSize:14, fontWeight:600 }}>Loading…</span>
+        </div>
+      );
+
+      // Logged out (Supabase is configured)
+      if (!user && sb) return <LoginScreen />;
 
       return (
         <div style={{ display:'flex', flexDirection:'column', height:'100vh' }}>
           <Header dayStart={dayStart} dayEnd={dayEnd}
             onDayStart={setDayStart} onDayEnd={setDayEnd}
             onGenerate={handleGenerate} onClear={handleClear}
-            hasSchedule={schedule.length > 0} />
+            hasSchedule={schedule.length > 0}
+            user={user} onSignOut={handleSignOut} />
 
-          <div style={{ display:'flex', flex:1, overflow:'hidden' }}>
-            <aside style={{ width:210, flexShrink:0, background:'#202020', borderRight:'1px solid #2a2a2a', display:'flex', flexDirection:'column', overflow:'hidden' }}>
-              <div style={{ padding:'14px 14px 10px', borderBottom:'1px solid #252525' }}>
-                <span style={{ fontSize:10, fontWeight:800, color:'#444', textTransform:'uppercase', letterSpacing:'0.09em' }}>Buckets</span>
-              </div>
-              <div style={{ flex:1, overflowY:'auto', padding:10 }}>
-                <BucketSidebar buckets={buckets} schedule={schedule}
-                  onEdit={b => setEditBucket(b)} onDelete={handleDeleteBucket}
-                  onNew={() => setShowNewBkt(true)} />
-              </div>
-            </aside>
+          {syncing && (
+            <div style={{ background:'#1e1e1e', padding:'5px 24px', fontSize:11, color:'#555', fontWeight:600, borderBottom:'1px solid #252525', letterSpacing:'0.04em' }}>
+              ↻ Syncing…
+            </div>
+          )}
 
-            <main style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', background:'#191919' }}>
-              <div style={{ background:'#202020', borderBottom:'1px solid #2a2a2a', padding:'0 24px', display:'flex', gap:24 }}>
-                {[['tasks','Tasks'],['schedule','Schedule']].map(([id,lbl]) => (
-                  <button key={id} onClick={() => setView(id)} className={`tab-btn ${view===id?'active':''}`}>
-                    {lbl}
-                    {id==='schedule' && schedule.length > 0 && (
-                      <span style={{ marginLeft:6, fontSize:10, background:'#2e2e2e', color:'#777', padding:'1px 6px', borderRadius:99, fontWeight:700 }}>
-                        {doneCount}/{schedule.length}
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
+          <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', background:'#191919' }}>
+            <div style={{ background:'#202020', borderBottom:'1px solid #2a2a2a', padding:'0 24px', display:'flex', gap:24 }}>
+              {[['tasks','Tasks'],['schedule','Schedule']].map(([id,lbl]) => (
+                <button key={id} onClick={() => setView(id)} className={`tab-btn ${view===id?'active':''}`}>
+                  {lbl}
+                  {id==='schedule' && schedule.length > 0 && (
+                    <span style={{ marginLeft:6, fontSize:10, background:'#2e2e2e', color:'#777', padding:'1px 6px', borderRadius:99, fontWeight:700 }}>
+                      {doneCount}/{schedule.length}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
 
-              <div style={{ flex:1, overflowY:'auto', padding:'24px 28px' }}>
-                {view === 'tasks' && (
-                  <div style={{ maxWidth:680 }}>
-                    <TasksPanel
-                      buckets={buckets} tasks={tasks} fixedEvents={fixedEvents}
-                      templates={templates} schedule={schedule} categories={categories}
-                      onAddTask={handleAddTask} onDeleteTask={handleDeleteTask}
-                      onAddFixed={handleAddFixed} onDeleteFixed={handleDeleteFixed}
-                      onNewBucket={() => setShowNewBkt(true)}
-                      onEditBucket={b => setEditBucket(b)} onDeleteBucket={handleDeleteBucket}
-                      onUseTemplate={handleUseTemplate}
-                      onDeleteTemplate={handleDeleteTemplate} onAddTemplate={handleAddTemplate}
-                      onCategoriesChange={setCategories}
-                    />
-                  </div>
-                )}
-                {view === 'schedule' && (
-                  <ScheduleView schedule={schedule} overflow={overflow} dayStart={dayStart}
-                    onToggleDone={handleToggleDone} onDeleteBlock={handleDeleteBlock}
-                    onReorder={handleReorder} />
-                )}
-              </div>
-            </main>
+            <div style={{ flex:1, overflowY:'auto', padding:'24px 28px' }}>
+              {view === 'tasks' && (
+                <div style={{ maxWidth:680 }}>
+                  <TasksPanel
+                    buckets={buckets} tasks={tasks} fixedEvents={fixedEvents}
+                    templates={templates} schedule={schedule} categories={categories}
+                    onAddTask={handleAddTask} onDeleteTask={handleDeleteTask}
+                    onAddFixed={handleAddFixed} onDeleteFixed={handleDeleteFixed}
+                    onNewBucket={() => setShowNewBkt(true)}
+                    onEditBucket={b => setEditBucket(b)} onDeleteBucket={handleDeleteBucket}
+                    onUseTemplate={handleUseTemplate}
+                    onDeleteTemplate={handleDeleteTemplate} onAddTemplate={handleAddTemplate}
+                    onCategoriesChange={setCategories}
+                  />
+                </div>
+              )}
+              {view === 'schedule' && (
+                <ScheduleView schedule={schedule} overflow={overflow} dayStart={dayStart}
+                  onToggleDone={handleToggleDone} onDeleteBlock={handleDeleteBlock}
+                  onReorder={handleReorder} />
+              )}
+            </div>
           </div>
 
           {(showNewBkt || editBucket) && (
