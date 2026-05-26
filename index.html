@@ -1176,8 +1176,9 @@
         sb.auth.getSession().then(({ data: { session } }) => {
           setUser(session?.user ?? null);
         });
-        const { data: { subscription } } = sb.auth.onAuthStateChange((_ev, session) => {
-          cloudReady.current = false;
+        const { data: { subscription } } = sb.auth.onAuthStateChange((event, session) => {
+          // Only reset cloudReady on actual sign-out, not on token refreshes
+          if (event === 'SIGNED_OUT') cloudReady.current = false;
           setUser(session?.user ?? null);
         });
         return () => subscription.unsubscribe();
