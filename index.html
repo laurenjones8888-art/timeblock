@@ -150,12 +150,16 @@
 
     const STORAGE_KEY = 'timeblock_v4';
 
-    const DEFAULTS = {
+    const DEFAULT_DAY = {
       dayStart: 540, dayEnd: 1080,
       buckets: [], tasks: [], fixedEvents: [],
       schedule: [], overflow: [],
+    };
+
+    const DEFAULTS = {
       templates: DEFAULT_TEMPLATES,
       categories: DEFAULT_CATEGORIES,
+      days: {},
     };
 
     /* ═══════════════════════════════════════════════
@@ -181,7 +185,36 @@
     const getColor = id => PALETTE.find(p => p.id === id) || PALETTE[0];
     const colorPairIdx = (bg) => Math.max(0, COLOR_PAIRS.findIndex(p => p.bg === bg));
 
-    const loadData = () => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch { return null; } };
+    // Date utilities
+    const todayStr = () => { const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; };
+    const offsetDate = (dateStr, n) => { const d = new Date(dateStr + 'T12:00:00'); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; };
+    const dateLabel = (dateStr) => {
+      const today = todayStr();
+      if (dateStr === today) return 'Today';
+      if (dateStr === offsetDate(today, 1)) return 'Tomorrow';
+      if (dateStr === offsetDate(today, -1)) return 'Yesterday';
+      const d = new Date(dateStr + 'T12:00:00');
+      return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    };
+
+    const loadData = () => {
+      try {
+        const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+        if (!raw) return null;
+        // Migrate old flat format → new days-keyed format
+        if (raw.tasks !== undefined && !raw.days) {
+          const today = todayStr();
+          return {
+            categories: raw.categories,
+            templates: raw.templates,
+            days: { [today]: { dayStart: raw.dayStart ?? 540, dayEnd: raw.dayEnd ?? 1080,
+              tasks: raw.tasks ?? [], buckets: raw.buckets ?? [], fixedEvents: raw.fixedEvents ?? [],
+              schedule: raw.schedule ?? [], overflow: raw.overflow ?? [] } }
+          };
+        }
+        return raw;
+      } catch { return null; }
+    };
     const saveData = d => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); } catch {} };
 
     /* ═══════════════════════════════════════════════
@@ -1146,6 +1179,29 @@
     }
 
     /* ═══════════════════════════════════════════════
+       DATE NAV
+    ═══════════════════════════════════════════════ */
+    function DateNav({ currentDate, onDate }) {
+      const isToday = currentDate === todayStr();
+      return (
+        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+          <button onClick={() => onDate(offsetDate(currentDate, -1))}
+            style={{ background:'none', border:'none', cursor:'pointer', color:'#555', fontSize:18, lineHeight:1, padding:'2px 6px', borderRadius:8, transition:'color 0.12s' }}
+            onMouseEnter={e => e.currentTarget.style.color='#aaa'} onMouseLeave={e => e.currentTarget.style.color='#555'}>‹</button>
+          <button onClick={() => onDate(todayStr())}
+            style={{ background: isToday ? '#2a2a2a' : 'transparent', border:'1px solid', borderColor: isToday ? '#3a3a3a' : 'transparent',
+              color: isToday ? '#f0f0f0' : '#aaa', fontSize:13, fontWeight:700, cursor:'pointer', borderRadius:8,
+              padding:'4px 12px', transition:'all 0.12s', whiteSpace:'nowrap' }}>
+            {dateLabel(currentDate)}
+          </button>
+          <button onClick={() => onDate(offsetDate(currentDate, 1))}
+            style={{ background:'none', border:'none', cursor:'pointer', color:'#555', fontSize:18, lineHeight:1, padding:'2px 6px', borderRadius:8, transition:'color 0.12s' }}
+            onMouseEnter={e => e.currentTarget.style.color='#aaa'} onMouseLeave={e => e.currentTarget.style.color='#555'}>›</button>
+        </div>
+      );
+    }
+
+    /* ═══════════════════════════════════════════════
        APP
     ═══════════════════════════════════════════════ */
     function App() {
@@ -1154,21 +1210,36 @@
       const [syncing, setSyncing] = useState(false);
 
       const saved = useMemo(() => loadData(), []);
-      const [dayStart,    setDayStart]   = useState(saved?.dayStart    ?? DEFAULTS.dayStart);
-      const [dayEnd,      setDayEnd]     = useState(saved?.dayEnd      ?? DEFAULTS.dayEnd);
-      const [buckets,     setBuckets]    = useState(saved?.buckets     ?? DEFAULTS.buckets);
-      const [tasks,       setTasks]      = useState(saved?.tasks       ?? DEFAULTS.tasks);
-      const [fixedEvents, setFixed]      = useState(saved?.fixedEvents ?? DEFAULTS.fixedEvents);
-      const [schedule,    setSchedule]   = useState(saved?.schedule    ?? DEFAULTS.schedule);
-      const [overflow,    setOverflow]   = useState(saved?.overflow    ?? DEFAULTS.overflow);
-      const [templates,   setTemplates]  = useState(saved?.templates   ?? DEFAULTS.templates);
-      const [categories,  setCategories] = useState(saved?.categories  ?? DEFAULTS.categories);
-      const [view,        setView]       = useState('tasks');
-      const [editBucket,  setEditBucket] = useState(null);
-      const [showNewBkt,  setShowNewBkt] = useState(false);
+      const [currentDate, setCurrentDate] = useState(todayStr);
+      const [days,        setDays]        = useState(saved?.days       ?? DEFAULTS.days);
+      const [templates,   setTemplates]   = useState(saved?.templates  ?? DEFAULTS.templates);
+      const [categories,  setCategories]  = useState(saved?.categories ?? DEFAULTS.categories);
+      const [view,        setView]        = useState('tasks');
+      const [editBucket,  setEditBucket]  = useState(null);
+      const [showNewBkt,  setShowNewBkt]  = useState(false);
 
       const cloudReady = useRef(false);
       const saveTimer  = useRef(null);
+
+      // Derive current day's data (falls back to DEFAULT_DAY if date not yet saved)
+      const day = days[currentDate] ?? DEFAULT_DAY;
+      const { dayStart, dayEnd, buckets, tasks, fixedEvents, schedule, overflow } = day;
+
+      // Helper to update a single field on the current day
+      const setDayField = (field, valueOrFn) => setDays(prev => {
+        const cur = prev[currentDate] ?? DEFAULT_DAY;
+        const newVal = typeof valueOrFn === 'function' ? valueOrFn(cur[field]) : valueOrFn;
+        return { ...prev, [currentDate]: { ...cur, [field]: newVal } };
+      });
+
+      // Wrapper setters that mirror the old individual setState API
+      const setDayStart = v  => setDayField('dayStart', v);
+      const setDayEnd   = v  => setDayField('dayEnd', v);
+      const setBuckets  = fn => setDayField('buckets', fn);
+      const setTasks    = fn => setDayField('tasks', fn);
+      const setFixed    = fn => setDayField('fixedEvents', fn);
+      const setSchedule = fn => setDayField('schedule', fn);
+      const setOverflow = fn => setDayField('overflow', fn);
 
       // Auth session setup
       useEffect(() => {
@@ -1190,13 +1261,7 @@
         setSyncing(true);
         loadCloud(user.id).then(data => {
           if (data) {
-            if (data.dayStart    != null) setDayStart(data.dayStart);
-            if (data.dayEnd      != null) setDayEnd(data.dayEnd);
-            if (data.buckets)    setBuckets(data.buckets);
-            if (data.tasks)      setTasks(data.tasks);
-            if (data.fixedEvents) setFixed(data.fixedEvents);
-            if (data.schedule)   setSchedule(data.schedule);
-            if (data.overflow)   setOverflow(data.overflow);
+            if (data.days)       setDays(data.days);
             if (data.templates)  setTemplates(data.templates);
             if (data.categories) setCategories(data.categories);
           }
@@ -1207,13 +1272,13 @@
 
       // Save to localStorage + debounced cloud save
       useEffect(() => {
-        const d = { dayStart, dayEnd, buckets, tasks, fixedEvents, schedule, overflow, templates, categories };
+        const d = { days, templates, categories };
         saveData(d);
         if (user && sb && cloudReady.current) {
           clearTimeout(saveTimer.current);
           saveTimer.current = setTimeout(() => saveCloud(user.id, d), 1500);
         }
-      }, [dayStart, dayEnd, buckets, tasks, fixedEvents, schedule, overflow, templates, categories]);
+      }, [days, templates, categories]);
 
       const handleSignOut = async () => {
         clearTimeout(saveTimer.current);
@@ -1276,17 +1341,22 @@
           )}
 
           <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', background:'#191919' }}>
-            <div style={{ background:'#202020', borderBottom:'1px solid #2a2a2a', padding:'0 24px', display:'flex', gap:24 }}>
-              {[['tasks','Tasks'],['schedule','Schedule']].map(([id,lbl]) => (
-                <button key={id} onClick={() => setView(id)} className={`tab-btn ${view===id?'active':''}`}>
-                  {lbl}
-                  {id==='schedule' && schedule.length > 0 && (
-                    <span style={{ marginLeft:6, fontSize:10, background:'#2e2e2e', color:'#777', padding:'1px 6px', borderRadius:99, fontWeight:700 }}>
-                      {doneCount}/{schedule.length}
-                    </span>
-                  )}
-                </button>
-              ))}
+            <div style={{ background:'#202020', borderBottom:'1px solid #2a2a2a', padding:'0 20px', display:'flex', alignItems:'center', gap:16 }}>
+              <div style={{ display:'flex', gap:20 }}>
+                {[['tasks','Tasks'],['schedule','Schedule']].map(([id,lbl]) => (
+                  <button key={id} onClick={() => setView(id)} className={`tab-btn ${view===id?'active':''}`}>
+                    {lbl}
+                    {id==='schedule' && schedule.length > 0 && (
+                      <span style={{ marginLeft:6, fontSize:10, background:'#2e2e2e', color:'#777', padding:'1px 6px', borderRadius:99, fontWeight:700 }}>
+                        {doneCount}/{schedule.length}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+              <div style={{ marginLeft:'auto' }}>
+                <DateNav currentDate={currentDate} onDate={setCurrentDate} />
+              </div>
             </div>
 
             <div className="content-pad" style={{ flex:1, overflowY:'auto', padding:'24px 28px' }}>
