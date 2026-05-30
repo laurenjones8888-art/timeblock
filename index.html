@@ -158,6 +158,7 @@
 
     const DEFAULTS = {
       templates: DEFAULT_TEMPLATES,
+      fixedTemplates: [],
       categories: DEFAULT_CATEGORIES,
       days: {},
     };
@@ -220,7 +221,28 @@
     /* ═══════════════════════════════════════════════
        SCHEDULE ALGORITHM
     ═══════════════════════════════════════════════ */
+
+    // Determine slot preference for a task item
+    const getSlotPref = (task) => {
+      if (task?.slot && task.slot !== 'any') return task.slot;
+      const catId = task?.category || '';
+      if (catId === 'work' || catId === 'meeting') return 'work';
+      const l = (task?.name || '').toLowerCase();
+      if (l.includes('breakfast') || l.includes('morning coffee') || l.includes('morning tea')) return 'morning';
+      if (l.includes('lunch') || l.includes('brunch')) return 'midday';
+      if (l.includes('dinner') || l.includes('supper') || l.includes('evening meal')) return 'evening';
+      return 'any';
+    };
+
     const buildSchedule = (buckets, tasks, fixedEvents, dayStart, dayEnd, categories) => {
+      // Time ranges for each slot preference (minutes from midnight)
+      const SLOT_RANGES = {
+        morning: [dayStart,               Math.min(720,  dayEnd)],  // start → noon
+        midday:  [Math.max(660, dayStart), Math.min(840,  dayEnd)],  // 11am → 2pm
+        work:    [Math.max(540, dayStart), Math.min(1020, dayEnd)],  // 9am  → 5pm
+        evening: [Math.max(1020, dayStart), dayEnd],                 // 5pm  → end
+      };
+
       const items = [];
 
       for (const b of buckets) {
@@ -231,12 +253,13 @@
         if (!b.explode) {
           const dur = b.subtasks.reduce((s, t) => s + t.duration, 0);
           items.push({ id: uid(), type: 'bucket', bucketId: b.id, subtaskId: null, standaloneId: null,
-            label: b.name, duration: dur, icon, color,
+            label: b.name, duration: dur, icon, color, slotPref: 'any',
             priority: b.subtasks.some(t => t.priority === 'high') ? 'high' : 'normal' });
         } else {
           for (const st of b.subtasks) {
             items.push({ id: uid(), type: 'subtask', bucketId: b.id, subtaskId: st.id, standaloneId: null,
-              label: `${b.name} · ${st.name}`, duration: st.duration, icon, color, priority: st.priority });
+              label: `${b.name} · ${st.name}`, duration: st.duration, icon, color,
+              priority: st.priority, slotPref: 'any' });
           }
         }
       }
@@ -245,10 +268,18 @@
         const c = getCat(categories, t.category);
         items.push({ id: uid(), type: 'standalone', bucketId: null, subtaskId: null, standaloneId: t.id,
           label: t.name, duration: t.duration, icon: c.icon,
-          color: { bg: c.bg, text: c.text }, priority: t.priority });
+          color: { bg: c.bg, text: c.text }, priority: t.priority,
+          slotPref: getSlotPref(t) });
       }
 
-      const sorted = [...items.filter(i => i.priority === 'high'), ...items.filter(i => i.priority !== 'high')];
+      // Sort: respect time-of-day order (morning first) then priority within each group
+      const slotOrder = { morning: 0, midday: 1, work: 1, any: 2, evening: 3 };
+      const sorted = [...items].sort((a, b) => {
+        const aPri = a.priority === 'high' ? 0 : 1;
+        const bPri = b.priority === 'high' ? 0 : 1;
+        if (aPri !== bPri) return aPri - bPri;
+        return (slotOrder[a.slotPref] ?? 2) - (slotOrder[b.slotPref] ?? 2);
+      });
 
       const fixedSorted = [...fixedEvents]
         .filter(fe => fe.endTime > dayStart && fe.startTime < dayEnd)
@@ -262,31 +293,51 @@
       }
       if (cur < dayEnd) slots.push({ start: cur, end: dayEnd, cursor: cur });
 
-      const scheduled = [], overflow = [];
-      for (const item of sorted) {
-        let placed = false;
-        for (const slot of slots) {
-          if (slot.cursor + item.duration <= slot.end) {
-            scheduled.push({ id: item.id, type: item.type, bucketId: item.bucketId,
-              subtaskId: item.subtaskId, standaloneId: item.standaloneId,
-              label: item.label, icon: item.icon, startTime: slot.cursor,
-              endTime: slot.cursor + item.duration, duration: item.duration,
-              done: false, color: item.color, locked: false });
-            slot.cursor += item.duration;
-            if (item.duration > 90 && slot.cursor < slot.end) {
-              const bd = Math.min(25, slot.end - slot.cursor);
-              if (bd >= 10) {
-                scheduled.push({ id: uid(), type: 'break', label: 'Break', icon: '☕',
-                  bucketId: null, subtaskId: null, standaloneId: null,
-                  startTime: slot.cursor, endTime: slot.cursor + bd, duration: bd,
-                  done: false, color: { bg: BREAK_C.bg, text: BREAK_C.text }, locked: false });
-                slot.cursor += bd;
-              }
+      // Place item in best slot matching its time preference
+      const placeItem = (item) => {
+        const pref = item.slotPref;
+        if (pref && pref !== 'any' && SLOT_RANGES[pref]) {
+          const [prefStart, prefEnd] = SLOT_RANGES[pref];
+          // First: slot cursor already inside preferred range
+          for (const slot of slots) {
+            if (slot.cursor >= prefStart && slot.cursor < prefEnd && slot.cursor + item.duration <= slot.end)
+              return slot;
+          }
+          // Second: slot can be advanced to preferred start
+          for (const slot of slots) {
+            const tryFrom = Math.max(slot.cursor, prefStart);
+            if (tryFrom < prefEnd && tryFrom + item.duration <= slot.end) {
+              slot.cursor = tryFrom; // skip ahead — fillGaps will cover the gap
+              return slot;
             }
-            placed = true; break;
           }
         }
-        if (!placed) overflow.push({ label: item.label, duration: item.duration });
+        return slots.find(s => s.cursor + item.duration <= s.end) ?? null;
+      };
+
+      const scheduled = [], overflow = [];
+      for (const item of sorted) {
+        const slot = placeItem(item);
+        if (slot) {
+          scheduled.push({ id: item.id, type: item.type, bucketId: item.bucketId,
+            subtaskId: item.subtaskId, standaloneId: item.standaloneId,
+            label: item.label, icon: item.icon, startTime: slot.cursor,
+            endTime: slot.cursor + item.duration, duration: item.duration,
+            done: false, color: item.color, locked: false });
+          slot.cursor += item.duration;
+          if (item.duration > 90 && slot.cursor < slot.end) {
+            const bd = Math.min(25, slot.end - slot.cursor);
+            if (bd >= 10) {
+              scheduled.push({ id: uid(), type: 'break', label: 'Break', icon: '☕',
+                bucketId: null, subtaskId: null, standaloneId: null,
+                startTime: slot.cursor, endTime: slot.cursor + bd, duration: bd,
+                done: false, color: { bg: BREAK_C.bg, text: BREAK_C.text }, locked: false });
+              slot.cursor += bd;
+            }
+          }
+        } else {
+          overflow.push({ label: item.label, duration: item.duration });
+        }
       }
 
       const fixedBlocks = fixedSorted.map(fe => {
@@ -707,25 +758,35 @@
     /* ═══════════════════════════════════════════════
        TASKS PANEL
     ═══════════════════════════════════════════════ */
-    function TasksPanel({ buckets, tasks, fixedEvents, templates, schedule, categories,
+    function TasksPanel({ buckets, tasks, fixedEvents, templates, fixedTemplates, schedule, categories,
         onAddTask, onDeleteTask, onAddFixed, onDeleteFixed,
         onNewBucket, onEditBucket, onDeleteBucket,
-        onUseTemplate, onDeleteTemplate, onAddTemplate,
+        onUseTemplate, onDeleteTemplate, onAddTemplate, onReorderTemplates,
+        onSaveFixedTemplate, onDeleteFixedTemplate, onUseFixedTemplate,
         onCategoriesChange }) {
 
       const [tab, setTab] = useState('buckets');
       const [tName, setTName] = useState(''); const [tDur, setTDur] = useState('30');
       const [tCat, setTCat]   = useState(() => categories[0]?.id || 'work');
       const [tPri, setTPri]   = useState('normal');
+      const [tSlot, setTSlot] = useState('any');
       const [feName, setFeName] = useState(''); const [feStart, setFeStart] = useState('09:00');
       const [feEnd, setFeEnd]   = useState('10:00');
       const [feCat, setFeCat]   = useState(() => categories[0]?.id || 'work');
       const [tmName, setTmName] = useState(''); const [tmDur, setTmDur] = useState('30');
       const [tmCat, setTmCat]   = useState(() => categories[0]?.id || 'work');
+      // Fixed-event template form
+      const [ftName, setFtName] = useState(''); const [ftStart, setFtStart] = useState('09:00');
+      const [ftEnd, setFtEnd]   = useState('10:00');
+      const [ftCat, setFtCat]   = useState(() => categories[0]?.id || 'work');
+      // Template DnD
+      const tplDragRef = useRef(null);
+      const [tplDragIdx, setTplDragIdx] = useState(null);
+      const [tplDragOver, setTplDragOver] = useState(null);
 
       const addTask = () => {
         const n = tName.trim(); if (!n) return;
-        onAddTask({ id: uid(), name: n, duration: Math.max(5, parseInt(tDur) || 30), category: tCat, priority: tPri, done: false });
+        onAddTask({ id: uid(), name: n, duration: Math.max(5, parseInt(tDur) || 30), category: tCat, priority: tPri, slot: tSlot, done: false });
         setTName('');
       };
       const addFixed = () => {
@@ -740,6 +801,13 @@
         onAddTemplate({ id: uid(), name: n, duration: Math.max(5, parseInt(tmDur) || 30), category: tmCat });
         setTmName('');
       };
+      const saveFixedTpl = () => {
+        const n = ftName.trim(); if (!n) return;
+        const s = inputToMins(ftStart), e = inputToMins(ftEnd);
+        if (e <= s) return;
+        onSaveFixedTemplate({ id: uid(), name: n, startTime: s, endTime: e, category: ftCat });
+        setFtName('');
+      };
 
       const CatSelect = ({ value, onChange: onCh, style }) => (
         <select value={value} onChange={e => onCh(e.target.value)} style={style}>
@@ -750,6 +818,19 @@
       const itemCard = (cat) => ({
         display:'flex', alignItems:'center', gap:10, padding:'10px 14px', borderRadius:12, background:cat.bg,
       });
+
+      const SLOT_LABELS = { any:'Any time', morning:'🌅 Morning', midday:'🍽 Midday', work:'☀️ Work hrs', evening:'🌆 Evening' };
+
+      const onTplDragStart = (e, i) => { tplDragRef.current = i; setTplDragIdx(i); e.dataTransfer.effectAllowed = 'move'; };
+      const onTplDragOver  = (e, i) => { e.preventDefault(); setTplDragOver(i); };
+      const onTplDrop = (e, ti) => {
+        e.preventDefault();
+        const si = tplDragRef.current;
+        if (si === null || si === ti) return;
+        const next = [...templates]; const [item] = next.splice(si, 1); next.splice(ti, 0, item);
+        onReorderTemplates(next); setTplDragIdx(null); setTplDragOver(null); tplDragRef.current = null;
+      };
+      const onTplDragEnd = () => { setTplDragIdx(null); setTplDragOver(null); tplDragRef.current = null; };
 
       const tabs = [
         ['buckets','Buckets'], ['tasks','Tasks'],
@@ -821,16 +902,29 @@
                     style={{ width:70, textAlign:'center' }} placeholder="min" />
                 </div>
                 <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-                  <CatSelect value={tCat} onChange={setTCat} style={{ flex:1, minWidth:120 }} />
+                  <CatSelect value={tCat} onChange={setTCat} style={{ flex:1, minWidth:100 }} />
                   <select value={tPri} onChange={e => setTPri(e.target.value)}>
                     <option value="normal">Normal</option>
                     <option value="high">⚡ High</option>
                   </select>
                   <button onClick={addTask} style={{ padding:'8px 18px', borderRadius:10, fontSize:13, fontWeight:700, background:'#f5f2ee', color:'#2a2520', border:'none', cursor:'pointer' }}>Add</button>
                 </div>
+                <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+                  <span style={{ fontSize:11, fontWeight:700, color:'#555', alignSelf:'center', whiteSpace:'nowrap' }}>Schedule at:</span>
+                  {Object.entries(SLOT_LABELS).map(([key, lbl]) => (
+                    <button key={key} onClick={() => setTSlot(key)} style={{
+                      fontSize:11, fontWeight:700, padding:'4px 10px', borderRadius:20, border:'1px solid',
+                      cursor:'pointer', transition:'all 0.12s',
+                      background: tSlot === key ? '#f0f0f0' : 'transparent',
+                      color:      tSlot === key ? '#191919' : '#555',
+                      borderColor: tSlot === key ? '#f0f0f0' : '#333',
+                    }}>{lbl}</button>
+                  ))}
+                </div>
               </div>
               {tasks.map(t => {
                 const c = getCat(categories, t.category);
+                const slotLbl = t.slot && t.slot !== 'any' ? SLOT_LABELS[t.slot] : null;
                 return (
                   <div key={t.id} className="group" style={{ ...itemCard(c), borderLeft:`3px solid ${c.text}44` }}>
                     <span style={{ fontSize:15 }}>{c.icon}</span>
@@ -838,8 +932,9 @@
                       <span style={{ fontSize:13, fontWeight:600, color:c.text }}>{t.name}</span>
                       <span style={{ fontSize:12, color:c.text, opacity:0.55, marginLeft:8 }}>{fmtDur(t.duration)}</span>
                     </div>
+                    {slotLbl && <span style={{ fontSize:10, padding:'2px 7px', borderRadius:99, background:`${c.text}10`, color:c.text, fontWeight:700, flexShrink:0 }}>{slotLbl}</span>}
                     <span style={{ fontSize:11, padding:'2px 8px', borderRadius:99, background:`${c.text}18`, color:c.text, fontWeight:700, flexShrink:0 }}>{c.label}</span>
-                    {t.priority === 'high' && <span style={{ fontSize:11, color:'#d97706', fontWeight:700, flexShrink:0 }}>⚡ High</span>}
+                    {t.priority === 'high' && <span style={{ fontSize:11, color:'#d97706', fontWeight:700, flexShrink:0 }}>⚡</span>}
                     <button onClick={() => onDeleteTask(t.id)} className="group-hover-show"
                       style={{ background:'none', border:'none', cursor:'pointer', color:c.text, opacity:0.4, fontSize:16, lineHeight:1 }}>&times;</button>
                   </div>
@@ -852,7 +947,7 @@
           {tab === 'fixed' && (
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
               <div style={{ background:'#222', borderRadius:16, padding:16, border:'1px solid #2e2e2e', display:'flex', flexDirection:'column', gap:10 }}>
-                <Label>Add existing event</Label>
+                <Label>Add fixed event for today</Label>
                 <input value={feName} onChange={e => setFeName(e.target.value)} onKeyDown={e => e.key==='Enter'&&addFixed()}
                   style={{ width:'100%' }} placeholder="e.g. Team standup, Doctor appt, Class" />
                 <div style={{ display:'flex', gap:8, alignItems:'flex-end' }}>
@@ -883,6 +978,9 @@
                       </div>
                     </div>
                     <span style={{ fontSize:10, padding:'2px 7px', borderRadius:99, background:`${c.text}15`, color:c.text, fontWeight:700, flexShrink:0 }}>FIXED</span>
+                    <button onClick={() => onSaveFixedTemplate({ id: uid(), name: fe.name, startTime: fe.startTime, endTime: fe.endTime, category: fe.category })}
+                      className="group-hover-show" title="Save as reusable template"
+                      style={{ fontSize:11, padding:'3px 8px', borderRadius:7, background:`${c.text}12`, color:c.text, border:'none', cursor:'pointer', fontWeight:600, flexShrink:0 }}>Save tpl</button>
                     <button onClick={() => onDeleteFixed(fe.id)} className="group-hover-show"
                       style={{ background:'none', border:'none', cursor:'pointer', color:c.text, opacity:0.4, fontSize:16, lineHeight:1 }}>&times;</button>
                   </div>
@@ -894,10 +992,21 @@
 
           {tab === 'templates' && (
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-              {templates.map(t => {
+              {/* ── Task templates ── */}
+              <div style={{ fontSize:11, fontWeight:700, color:'#555', textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:2 }}>Task templates</div>
+              {templates.map((t, i) => {
                 const c = getCat(categories, t.category);
+                const isDragging = tplDragIdx === i;
+                const isOver = tplDragOver === i && tplDragIdx !== i;
                 return (
-                  <div key={t.id} className="group" style={{ ...itemCard(c) }}>
+                  <div key={t.id}
+                    draggable onDragStart={e => onTplDragStart(e, i)} onDragOver={e => onTplDragOver(e, i)}
+                    onDrop={e => onTplDrop(e, i)} onDragEnd={onTplDragEnd}
+                    className="group"
+                    style={{ ...itemCard(c), opacity: isDragging ? 0.3 : 1,
+                      boxShadow: isOver ? `0 0 0 2px ${c.text}` : 'none',
+                      cursor:'grab', transition:'opacity 0.12s, box-shadow 0.12s' }}>
+                    <span style={{ color:`${c.text}40`, fontSize:14, lineHeight:1 }}>⠿</span>
                     <span style={{ fontSize:15 }}>{c.icon}</span>
                     <span style={{ flex:1, fontSize:13, fontWeight:600, color:c.text }}>{t.name}</span>
                     <span style={{ fontSize:11, color:c.text, opacity:0.55 }}>{fmtDur(t.duration)}</span>
@@ -907,9 +1016,9 @@
                   </div>
                 );
               })}
-              {!templates.length && <p style={{ fontSize:13, color:'#444', textAlign:'center', fontStyle:'italic', padding:'8px 0' }}>No templates.</p>}
-              <div style={{ background:'#222', borderRadius:14, padding:14, border:'1px solid #2e2e2e', display:'flex', flexDirection:'column', gap:8, marginTop:4 }}>
-                <Label>Save new template</Label>
+              {!templates.length && <p style={{ fontSize:13, color:'#444', textAlign:'center', fontStyle:'italic', padding:'4px 0' }}>No task templates.</p>}
+              <div style={{ background:'#222', borderRadius:14, padding:14, border:'1px solid #2e2e2e', display:'flex', flexDirection:'column', gap:8 }}>
+                <Label>New task template</Label>
                 <div style={{ display:'flex', gap:8 }}>
                   <input value={tmName} onChange={e => setTmName(e.target.value)} onKeyDown={e => e.key==='Enter'&&saveTpl()}
                     style={{ flex:1 }} placeholder="Name" />
@@ -919,6 +1028,48 @@
                 <div style={{ display:'flex', gap:8 }}>
                   <CatSelect value={tmCat} onChange={setTmCat} style={{ flex:1 }} />
                   <button onClick={saveTpl} style={{ padding:'8px 18px', borderRadius:10, fontSize:13, fontWeight:700, background:'#f5f2ee', color:'#2a2520', border:'none', cursor:'pointer' }}>Save</button>
+                </div>
+              </div>
+
+              {/* ── Fixed-event templates ── */}
+              <div style={{ fontSize:11, fontWeight:700, color:'#555', textTransform:'uppercase', letterSpacing:'0.07em', marginTop:12, marginBottom:2 }}>Fixed event templates</div>
+              <div style={{ fontSize:12, color:'#444', marginBottom:4 }}>Save recurring fixed events (standups, classes, etc.) and add them to any day with one click.</div>
+              {(fixedTemplates || []).map(ft => {
+                const c = getCat(categories, ft.category);
+                return (
+                  <div key={ft.id} className="group" style={{ ...itemCard(c), borderLeft:`3px solid ${c.text}44` }}>
+                    <span style={{ fontSize:15 }}>{c.icon}</span>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:13, fontWeight:700, color:c.text }}>{ft.name}</div>
+                      <div style={{ fontSize:11, color:c.text, opacity:0.6, marginTop:2 }}>
+                        {fmtTime(ft.startTime)} – {fmtTime(ft.endTime)} · {fmtDur(ft.endTime - ft.startTime)}
+                      </div>
+                    </div>
+                    <button onClick={() => onUseFixedTemplate(ft)} style={{ fontSize:12, padding:'4px 12px', borderRadius:8, background:`${c.text}18`, color:c.text, border:'none', cursor:'pointer', fontWeight:700 }}>Use</button>
+                    <button onClick={() => onDeleteFixedTemplate(ft.id)} className="group-hover-show"
+                      style={{ background:'none', border:'none', cursor:'pointer', color:c.text, opacity:0.4, fontSize:16, lineHeight:1 }}>&times;</button>
+                  </div>
+                );
+              })}
+              {!(fixedTemplates || []).length && <p style={{ fontSize:13, color:'#444', textAlign:'center', fontStyle:'italic', padding:'4px 0' }}>No fixed-event templates yet. Use "Save tpl" on a fixed event to add one.</p>}
+              <div style={{ background:'#222', borderRadius:14, padding:14, border:'1px solid #2e2e2e', display:'flex', flexDirection:'column', gap:8 }}>
+                <Label>New fixed-event template</Label>
+                <input value={ftName} onChange={e => setFtName(e.target.value)} onKeyDown={e => e.key==='Enter'&&saveFixedTpl()}
+                  style={{ width:'100%' }} placeholder="e.g. Morning standup, Yoga class" />
+                <div style={{ display:'flex', gap:8, alignItems:'flex-end' }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:11, color:'#555', marginBottom:5, fontWeight:600 }}>Start</div>
+                    <input type="time" value={ftStart} onChange={e => setFtStart(e.target.value)} style={{ width:'100%' }} />
+                  </div>
+                  <div style={{ color:'#444', paddingBottom:10, fontWeight:700 }}>→</div>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:11, color:'#555', marginBottom:5, fontWeight:600 }}>End</div>
+                    <input type="time" value={ftEnd} onChange={e => setFtEnd(e.target.value)} style={{ width:'100%' }} />
+                  </div>
+                </div>
+                <div style={{ display:'flex', gap:8 }}>
+                  <CatSelect value={ftCat} onChange={setFtCat} style={{ flex:1 }} />
+                  <button onClick={saveFixedTpl} style={{ padding:'8px 18px', borderRadius:10, fontSize:13, fontWeight:700, background:'#f5f2ee', color:'#2a2520', border:'none', cursor:'pointer' }}>Save</button>
                 </div>
               </div>
             </div>
@@ -934,14 +1085,67 @@
     /* ═══════════════════════════════════════════════
        TIMELINE BLOCK
     ═══════════════════════════════════════════════ */
-    function TimelineBlock({ block, index, onToggleDone, onDelete,
+    function TimelineBlock({ block, index, onToggleDone, onDelete, onEdit, onNudge, hasConflict,
         dragIdx, dragOverIdx, onDragStart, onDragOver, onDrop, onDragEnd }) {
+      const [editing, setEditing] = useState(false);
+      const [editLabel, setEditLabel] = useState(block.label);
+      const [editDur,   setEditDur]   = useState(String(block.duration));
+      const [editStart, setEditStart] = useState(minsToInput(block.startTime));
+      const editRef = useRef();
+
+      useEffect(() => { if (editing) editRef.current?.select(); }, [editing]);
+
+      const startEdit = () => {
+        setEditLabel(block.label); setEditDur(String(block.duration));
+        setEditStart(minsToInput(block.startTime)); setEditing(true);
+      };
+      const saveEdit = () => {
+        const dur   = Math.max(5, parseInt(editDur) || block.duration);
+        const start = inputToMins(editStart);
+        onEdit(index, { ...block, label: editLabel.trim() || block.label, duration: dur,
+          startTime: start, endTime: start + dur });
+        setEditing(false);
+      };
+
       const isFixed = block.locked;
       const isBreak = block.type === 'break';
       const isFree  = block.type === 'free';
       const isDragging = dragIdx === index;
       const isOver = dragOverIdx === index && dragIdx !== index;
       const minH = Math.max(block.duration * 1.2, isFree ? 36 : 64);
+      const conflictBorder = hasConflict ? '2px solid #f87171' : 'none';
+
+      // Edit form (shown inline)
+      if (editing) {
+        return (
+          <div style={{ borderRadius:14, background:block.color.bg, padding:'14px 18px',
+            border: `2px solid ${block.color.text}40`, display:'flex', flexDirection:'column', gap:10 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:block.color.text, opacity:0.6, textTransform:'uppercase', letterSpacing:'0.06em' }}>Edit block</div>
+            <input ref={editRef} value={editLabel} onChange={e => setEditLabel(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && saveEdit()}
+              style={{ fontWeight:700, fontSize:14, color:block.color.text,
+                background:`${block.color.text}12`, border:`1px solid ${block.color.text}30`, borderRadius:8 }} />
+            <div style={{ display:'flex', gap:8 }}>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:11, color:block.color.text, opacity:0.5, marginBottom:4, fontWeight:600 }}>Start time</div>
+                <input type="time" value={editStart} onChange={e => setEditStart(e.target.value)}
+                  style={{ width:'100%', color:block.color.text, background:`${block.color.text}12`, border:`1px solid ${block.color.text}30`, borderRadius:8 }} />
+              </div>
+              <div style={{ flex:1 }}>
+                <div style={{ fontSize:11, color:block.color.text, opacity:0.5, marginBottom:4, fontWeight:600 }}>Duration (min)</div>
+                <input type="number" value={editDur} onChange={e => setEditDur(e.target.value)} min="5"
+                  style={{ width:'100%', textAlign:'center', color:block.color.text, background:`${block.color.text}12`, border:`1px solid ${block.color.text}30`, borderRadius:8 }} />
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:8 }}>
+              <button onClick={() => setEditing(false)} style={{ flex:1, padding:'8px', borderRadius:10, fontSize:12, fontWeight:700,
+                background:'transparent', border:`1px solid ${block.color.text}30`, color:block.color.text, cursor:'pointer' }}>Cancel</button>
+              <button onClick={saveEdit} style={{ flex:2, padding:'8px', borderRadius:10, fontSize:13, fontWeight:700,
+                background:block.color.text, color:block.color.bg, border:'none', cursor:'pointer' }}>Save changes</button>
+            </div>
+          </div>
+        );
+      }
 
       // Free/gap blocks — minimal dashed style
       if (isFree) {
@@ -967,8 +1171,9 @@
           onDrop={e => onDrop(e, index)}
           onDragEnd={onDragEnd}
           className={`block-card ${isDragging ? 'is-dragging' : ''} ${isOver ? 'drag-over' : ''}`}
-          style={{ minHeight: minH, borderRadius:14, background:block.color.bg,
-            display:'flex', alignItems:'center', padding:'14px 18px', gap:12 }}
+          style={{ minHeight: minH, borderRadius:14, background:block.color.bg, border: conflictBorder,
+            display:'flex', alignItems:'center', padding:'14px 18px', gap:12,
+            transition:'border-color 0.15s, box-shadow 0.12s' }}
         >
           {!isFixed && <span className="drag-handle" style={{ color:`${block.color.text}30`, fontSize:16, flexShrink:0, lineHeight:1 }}>⠿</span>}
           <span style={{ fontSize:17, flexShrink:0, lineHeight:1 }}>{isFixed ? '🔒' : block.icon}</span>
@@ -977,19 +1182,38 @@
               textDecoration: block.done ? 'line-through' : 'none', opacity: block.done ? 0.45 : 1 }}>
               {isBreak ? 'Break' : block.label}
               {isFixed && <span style={{ fontSize:10, marginLeft:8, padding:'2px 7px', borderRadius:99, background:`${block.color.text}15`, fontWeight:700 }}>FIXED</span>}
+              {hasConflict && <span style={{ fontSize:10, marginLeft:8, padding:'2px 7px', borderRadius:99, background:'#f871711a', color:'#f87171', fontWeight:700 }}>overlap</span>}
             </div>
             <div style={{ fontSize:12, color:block.color.text, opacity:0.55, fontWeight:500 }}>
               {fmtTime(block.startTime)} – {fmtTime(block.endTime)} · {fmtDur(block.duration)}
               {isBreak && <span style={{ fontStyle:'italic', marginLeft:4 }}>(suggested)</span>}
             </div>
           </div>
+          {/* Nudge arrows */}
+          {!isFixed && (
+            <div style={{ display:'flex', flexDirection:'column', gap:2, flexShrink:0 }}>
+              <button onClick={() => onNudge(index, -15)} title="Move 15 min earlier"
+                style={{ background:`${block.color.text}14`, border:'none', borderRadius:6, cursor:'pointer',
+                  color:block.color.text, fontSize:11, lineHeight:1, padding:'3px 5px', transition:'background 0.1s' }}
+                onMouseEnter={e => e.currentTarget.style.background=`${block.color.text}28`}
+                onMouseLeave={e => e.currentTarget.style.background=`${block.color.text}14`}>▲</button>
+              <button onClick={() => onNudge(index, +15)} title="Move 15 min later"
+                style={{ background:`${block.color.text}14`, border:'none', borderRadius:6, cursor:'pointer',
+                  color:block.color.text, fontSize:11, lineHeight:1, padding:'3px 5px', transition:'background 0.1s' }}
+                onMouseEnter={e => e.currentTarget.style.background=`${block.color.text}28`}
+                onMouseLeave={e => e.currentTarget.style.background=`${block.color.text}14`}>▼</button>
+            </div>
+          )}
           <button onClick={() => onToggleDone(index)} style={{
             background:'none', border:'none', cursor:'pointer', fontSize:12, fontWeight:700, flexShrink:0,
-            color:block.color.text, opacity: block.done ? 0.9 : 0.3, transition:'opacity 0.15s', padding:'4px 0 4px 12px',
+            color:block.color.text, opacity: block.done ? 0.9 : 0.3, transition:'opacity 0.15s', padding:'4px 0 4px 4px',
           }}
             onMouseEnter={e => e.target.style.opacity='0.8'}
             onMouseLeave={e => e.target.style.opacity=block.done?'0.9':'0.3'}
-          >{block.done ? '✓ done' : 'done'}</button>
+          >{block.done ? '✓' : '○'}</button>
+          {!isFixed && <button onClick={startEdit} className="group-hover-show"
+            style={{ background:'none', border:'none', cursor:'pointer', color:block.color.text, opacity:0.3, fontSize:13, lineHeight:1, flexShrink:0 }}
+            onMouseEnter={e => e.target.style.opacity='0.7'} onMouseLeave={e => e.target.style.opacity='0.3'}>✏️</button>}
           <button onClick={() => onDelete(index)} className="group-hover-show"
             style={{ background:'none', border:'none', cursor:'pointer', color:block.color.text, opacity:0.25, fontSize:18, lineHeight:1, flexShrink:0 }}
             onMouseEnter={e => e.target.style.opacity='0.7'} onMouseLeave={e => e.target.style.opacity='0.25'}>&times;</button>
@@ -1000,7 +1224,7 @@
     /* ═══════════════════════════════════════════════
        SCHEDULE VIEW
     ═══════════════════════════════════════════════ */
-    function ScheduleView({ schedule, overflow, dayStart, dayEnd, categories, onToggleDone, onDeleteBlock, onReorder, onAddBlock }) {
+    function ScheduleView({ schedule, overflow, dayStart, dayEnd, categories, onToggleDone, onDeleteBlock, onReorder, onAddBlock, onEditBlock, onNudge, onResort }) {
       const dragIdxRef = useRef(null);
       const [dragIdx, setDragIdx] = useState(null);
       const [dragOverIdx, setDragOverIdx] = useState(null);
@@ -1009,13 +1233,38 @@
       const total = schedule.length;
       const pct = total ? Math.round(doneCount / total * 100) : 0;
 
-      const onDragStart = (e, i) => { dragIdxRef.current = i; setDragIdx(i); e.dataTransfer.effectAllowed = 'move'; };
-      const onDragOver  = (e, i) => { e.preventDefault(); setDragOverIdx(i); };
+      // Detect overlapping blocks
+      const conflictIds = useMemo(() => {
+        const ids = new Set();
+        for (let i = 0; i < schedule.length; i++) {
+          for (let j = i + 1; j < schedule.length; j++) {
+            const a = schedule[i], b = schedule[j];
+            if (a.startTime < b.endTime && a.endTime > b.startTime) {
+              ids.add(a.id); ids.add(b.id);
+            }
+          }
+        }
+        return ids;
+      }, [schedule]);
+      const hasAnyConflict = conflictIds.size > 0;
+
+      const onDragStart = (e, i) => {
+        dragIdxRef.current = i; setDragIdx(i);
+        e.dataTransfer.effectAllowed = 'move';
+        // Transparent drag ghost for cleaner feel
+        const ghost = document.createElement('div');
+        ghost.style.cssText = 'position:fixed;top:-999px;left:-999px;opacity:0';
+        document.body.appendChild(ghost);
+        e.dataTransfer.setDragImage(ghost, 0, 0);
+        setTimeout(() => document.body.removeChild(ghost), 0);
+      };
+      const onDragOver  = (e, i) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragOverIdx(i); };
       const onDrop = (e, ti) => {
         e.preventDefault();
         const si = dragIdxRef.current;
         if (si === null || si === ti) return;
         const next = [...schedule]; const [item] = next.splice(si, 1); next.splice(ti, 0, item);
+        // Keep times as-is — allow overlap, show conflicts in red
         onReorder(next); setDragIdx(null); setDragOverIdx(null); dragIdxRef.current = null;
       };
       const onDragEnd = () => { setDragIdx(null); setDragOverIdx(null); dragIdxRef.current = null; };
@@ -1055,6 +1304,14 @@
             </div>
           )}
 
+          {hasAnyConflict && (
+            <div style={{ background:'#2a1818', border:'1px solid #4a2222', borderRadius:12, padding:'10px 14px', marginBottom:12, display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
+              <span style={{ fontSize:13, color:'#f87171', fontWeight:600 }}>⚠️ Overlapping blocks detected</span>
+              <button onClick={onResort} style={{ fontSize:12, fontWeight:700, padding:'5px 14px', borderRadius:8,
+                background:'#f87171', color:'#fff', border:'none', cursor:'pointer' }}>Auto-fix & re-sort</button>
+            </div>
+          )}
+
           <div style={{ display:'flex', flexDirection:'column', gap:8 }} className="group">
             {schedule.map((block, i) => (
               <div key={block.id} style={{ display:'flex', alignItems:'flex-start', gap:14 }}>
@@ -1064,6 +1321,8 @@
                 <div style={{ flex:1, minWidth:0 }}>
                   <TimelineBlock block={block} index={i}
                     onToggleDone={onToggleDone} onDelete={onDeleteBlock}
+                    onEdit={onEditBlock} onNudge={onNudge}
+                    hasConflict={conflictIds.has(block.id)}
                     dragIdx={dragIdx} dragOverIdx={dragOverIdx}
                     onDragStart={onDragStart} onDragOver={onDragOver}
                     onDrop={onDrop} onDragEnd={onDragEnd} />
@@ -1210,16 +1469,18 @@
       const [syncing, setSyncing] = useState(false);
 
       const saved = useMemo(() => loadData(), []);
-      const [currentDate, setCurrentDate] = useState(todayStr);
-      const [days,        setDays]        = useState(saved?.days       ?? DEFAULTS.days);
-      const [templates,   setTemplates]   = useState(saved?.templates  ?? DEFAULTS.templates);
-      const [categories,  setCategories]  = useState(saved?.categories ?? DEFAULTS.categories);
-      const [view,        setView]        = useState('tasks');
-      const [editBucket,  setEditBucket]  = useState(null);
-      const [showNewBkt,  setShowNewBkt]  = useState(false);
+      const [currentDate,    setCurrentDate]    = useState(todayStr);
+      const [days,           setDays]           = useState(saved?.days          ?? DEFAULTS.days);
+      const [templates,      setTemplates]      = useState(saved?.templates     ?? DEFAULTS.templates);
+      const [fixedTemplates, setFixedTemplates] = useState(saved?.fixedTemplates ?? DEFAULTS.fixedTemplates);
+      const [categories,     setCategories]     = useState(saved?.categories    ?? DEFAULTS.categories);
+      const [view,           setView]           = useState('tasks');
+      const [editBucket,     setEditBucket]     = useState(null);
+      const [showNewBkt,     setShowNewBkt]     = useState(false);
 
-      const cloudReady = useRef(false);
-      const saveTimer  = useRef(null);
+      const cloudReady  = useRef(false);
+      const saveTimer   = useRef(null);
+      const recalcTimer = useRef(null);
 
       // Derive current day's data (falls back to DEFAULT_DAY if date not yet saved)
       const day = days[currentDate] ?? DEFAULT_DAY;
@@ -1261,9 +1522,10 @@
         setSyncing(true);
         loadCloud(user.id).then(data => {
           if (data) {
-            if (data.days)       setDays(data.days);
-            if (data.templates)  setTemplates(data.templates);
-            if (data.categories) setCategories(data.categories);
+            if (data.days)           setDays(data.days);
+            if (data.templates)      setTemplates(data.templates);
+            if (data.fixedTemplates) setFixedTemplates(data.fixedTemplates);
+            if (data.categories)     setCategories(data.categories);
           }
           cloudReady.current = true;
           setSyncing(false);
@@ -1272,13 +1534,13 @@
 
       // Save to localStorage + debounced cloud save
       useEffect(() => {
-        const d = { days, templates, categories };
+        const d = { days, templates, fixedTemplates, categories };
         saveData(d);
         if (user && sb && cloudReady.current) {
           clearTimeout(saveTimer.current);
           saveTimer.current = setTimeout(() => saveCloud(user.id, d), 1500);
         }
-      }, [days, templates, categories]);
+      }, [days, templates, fixedTemplates, categories]);
 
       const handleSignOut = async () => {
         clearTimeout(saveTimer.current);
@@ -1286,33 +1548,75 @@
         if (sb) await sb.auth.signOut();
       };
 
+      // Day start/end — recalculate schedule after a short delay if one exists
+      const handleDayStart = v => {
+        setDayStart(v);
+        if (schedule.length > 0) {
+          clearTimeout(recalcTimer.current);
+          recalcTimer.current = setTimeout(() => {
+            setSchedule(prev => fillGaps(recalcTimes(stripFree(prev), v), v, dayEnd));
+          }, 600);
+        }
+      };
+      const handleDayEnd = v => {
+        setDayEnd(v);
+        if (schedule.length > 0) {
+          clearTimeout(recalcTimer.current);
+          recalcTimer.current = setTimeout(() => {
+            setSchedule(prev => fillGaps(recalcTimes(stripFree(prev), dayStart), dayStart, v));
+          }, 600);
+        }
+      };
+
       const handleGenerate = () => {
         const r = buildSchedule(buckets, tasks, fixedEvents, dayStart, dayEnd, categories);
         setSchedule(fillGaps(r.schedule, dayStart, dayEnd));
         setOverflow(r.overflow); setView('schedule');
       };
-      const handleClear          = () => { setSchedule([]); setOverflow([]); };
-      const handleToggleDone     = idx => setSchedule(prev => { const n=[...prev]; n[idx]={...n[idx],done:!n[idx].done}; return n; });
-      const handleDeleteBlock    = idx => setSchedule(prev => {
+      const handleClear       = () => { setSchedule([]); setOverflow([]); };
+      const handleToggleDone  = idx => setSchedule(prev => { const n=[...prev]; n[idx]={...n[idx],done:!n[idx].done}; return n; });
+      const handleDeleteBlock = idx => setSchedule(prev => {
         const cleaned = stripFree(prev.filter((_,i) => i !== idx));
         return fillGaps(recalcTimes(cleaned, dayStart), dayStart, dayEnd);
       });
-      const handleReorder        = next => setSchedule(fillGaps(recalcTimes(stripFree(next), dayStart), dayStart, dayEnd));
-      const handleAddBlock       = block => setSchedule(prev => {
+      // Reorder: keep block times as-is so overlaps are visible in red
+      const handleReorder = next => setSchedule(next);
+      const handleAddBlock = block => setSchedule(prev => {
         const noFree = stripFree(prev);
         const last = noFree.reduce((m, b) => Math.max(m, b.endTime), dayStart);
         const newBlock = { ...block, startTime: last, endTime: last + block.duration };
         return fillGaps(recalcTimes([...noFree, newBlock], dayStart), dayStart, dayEnd);
       });
+      // Inline block edit — apply new props, allow overlaps (user can re-sort to fix)
+      const handleEditBlock = (idx, updated) => setSchedule(prev => {
+        const n = [...prev]; n[idx] = updated; return n;
+      });
+      // Nudge ±15 min — allow overlap
+      const handleNudge = (idx, delta) => setSchedule(prev => {
+        const b = prev[idx];
+        const newStart = Math.max(0, b.startTime + delta);
+        const n = [...prev];
+        n[idx] = { ...b, startTime: newStart, endTime: newStart + b.duration };
+        return n;
+      });
+      // Re-sort + recalcTimes to resolve all conflicts
+      const handleResort = () => setSchedule(prev =>
+        fillGaps(recalcTimes(stripFree([...prev].sort((a,b) => a.startTime - b.startTime)), dayStart), dayStart, dayEnd)
+      );
       const handleSaveBucket     = b => setBuckets(prev => { const i=prev.findIndex(x=>x.id===b.id); if(i>=0){const n=[...prev];n[i]=b;return n;} return [...prev,b]; });
       const handleDeleteBucket   = id => setBuckets(prev => prev.filter(b=>b.id!==id));
       const handleAddTask        = t => setTasks(prev => [...prev, t]);
       const handleDeleteTask     = id => setTasks(prev => prev.filter(t=>t.id!==id));
       const handleAddFixed       = fe => setFixed(prev => [...prev, fe]);
       const handleDeleteFixed    = id => setFixed(prev => prev.filter(f=>f.id!==id));
-      const handleUseTemplate    = tpl => handleAddTask({ id:uid(), name:tpl.name, duration:tpl.duration, category:tpl.category, priority:'normal', done:false });
+      const handleUseTemplate    = tpl => handleAddTask({ id:uid(), name:tpl.name, duration:tpl.duration, category:tpl.category, slot:'any', priority:'normal', done:false });
       const handleDeleteTemplate = id => setTemplates(prev => prev.filter(t=>t.id!==id));
       const handleAddTemplate    = tpl => setTemplates(prev => [...prev, tpl]);
+      const handleReorderTemplates = newList => setTemplates(newList);
+      // Fixed-event templates
+      const handleSaveFixedTemplate  = ft  => setFixedTemplates(prev => [...prev, ft]);
+      const handleDeleteFixedTemplate = id => setFixedTemplates(prev => prev.filter(f=>f.id!==id));
+      const handleUseFixedTemplate   = ft  => handleAddFixed({ ...ft, id: uid() });
 
       const doneCount = schedule.filter(b => b.done).length;
 
@@ -1329,7 +1633,7 @@
       return (
         <div style={{ display:'flex', flexDirection:'column', height:'100vh' }}>
           <Header dayStart={dayStart} dayEnd={dayEnd}
-            onDayStart={setDayStart} onDayEnd={setDayEnd}
+            onDayStart={handleDayStart} onDayEnd={handleDayEnd}
             onGenerate={handleGenerate} onClear={handleClear}
             hasSchedule={schedule.length > 0}
             user={user} onSignOut={handleSignOut} />
@@ -1364,13 +1668,18 @@
                 <div style={{ maxWidth:680 }}>
                   <TasksPanel
                     buckets={buckets} tasks={tasks} fixedEvents={fixedEvents}
-                    templates={templates} schedule={schedule} categories={categories}
+                    templates={templates} fixedTemplates={fixedTemplates}
+                    schedule={schedule} categories={categories}
                     onAddTask={handleAddTask} onDeleteTask={handleDeleteTask}
                     onAddFixed={handleAddFixed} onDeleteFixed={handleDeleteFixed}
                     onNewBucket={() => setShowNewBkt(true)}
                     onEditBucket={b => setEditBucket(b)} onDeleteBucket={handleDeleteBucket}
                     onUseTemplate={handleUseTemplate}
                     onDeleteTemplate={handleDeleteTemplate} onAddTemplate={handleAddTemplate}
+                    onReorderTemplates={handleReorderTemplates}
+                    onSaveFixedTemplate={handleSaveFixedTemplate}
+                    onDeleteFixedTemplate={handleDeleteFixedTemplate}
+                    onUseFixedTemplate={handleUseFixedTemplate}
                     onCategoriesChange={setCategories}
                   />
                 </div>
@@ -1379,7 +1688,8 @@
                 <ScheduleView schedule={schedule} overflow={overflow} dayStart={dayStart} dayEnd={dayEnd}
                   categories={categories} onToggleDone={handleToggleDone}
                   onDeleteBlock={handleDeleteBlock} onReorder={handleReorder}
-                  onAddBlock={handleAddBlock} />
+                  onAddBlock={handleAddBlock} onEditBlock={handleEditBlock}
+                  onNudge={handleNudge} onResort={handleResort} />
               )}
             </div>
           </div>
