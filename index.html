@@ -332,18 +332,6 @@
             label: item.label, icon: item.icon, startTime,
             endTime: startTime + item.duration, duration: item.duration,
             done: false, color: item.color, locked: false });
-          // Auto-break after long blocks
-          if (item.duration > 90) {
-            const bStart = startTime + item.duration;
-            const bd = Math.min(25, freeIvs.find(([s]) => s === bStart)?.[1] - bStart ?? 0);
-            if (bd >= 10) {
-              reserve(bStart, bd);
-              scheduled.push({ id: uid(), type: 'break', label: 'Break', icon: '☕',
-                bucketId: null, subtaskId: null, standaloneId: null,
-                startTime: bStart, endTime: bStart + bd, duration: bd,
-                done: false, color: { bg: BREAK_C.bg, text: BREAK_C.text }, locked: false });
-            }
-          }
         } else {
           overflow.push({ label: item.label, duration: item.duration });
         }
