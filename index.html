@@ -1576,8 +1576,8 @@
         const cleaned = stripFree(prev.filter((_,i) => i !== idx));
         return fillGaps(recalcTimes(cleaned, dayStart), dayStart, dayEnd);
       });
-      // Reorder: keep block times as-is so overlaps are visible in red
-      const handleReorder = next => setSchedule(next);
+      // Reorder: recalculate times so blocks flow correctly after drag
+      const handleReorder = next => setSchedule(fillGaps(recalcTimes(stripFree(next), dayStart), dayStart, dayEnd));
       const handleAddBlock = block => setSchedule(prev => {
         const noFree = stripFree(prev);
         const last = noFree.reduce((m, b) => Math.max(m, b.endTime), dayStart);
