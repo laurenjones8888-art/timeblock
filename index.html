@@ -285,54 +285,63 @@
         .filter(fe => fe.endTime > dayStart && fe.startTime < dayEnd)
         .sort((a, b) => a.startTime - b.startTime);
 
-      const slots = [];
+      // Build list of free intervals (avoids cursor-advancement gaps eating usable time)
+      let freeIvs = [];
       let cur = dayStart;
       for (const fe of fixedSorted) {
-        if (fe.startTime > cur) slots.push({ start: cur, end: fe.startTime, cursor: cur });
+        if (fe.startTime > cur) freeIvs.push([cur, fe.startTime]);
         cur = Math.max(cur, fe.endTime);
       }
-      if (cur < dayEnd) slots.push({ start: cur, end: dayEnd, cursor: cur });
+      if (cur < dayEnd) freeIvs.push([cur, dayEnd]);
 
-      // Place item in best slot matching its time preference
-      const placeItem = (item) => {
+      // Remove [start, start+dur] from the free list, splitting intervals as needed
+      const reserve = (start, dur) => {
+        const end = start + dur;
+        const next = [];
+        for (const [s, e] of freeIvs) {
+          if (e <= start || s >= end) { next.push([s, e]); }
+          else { if (s < start) next.push([s, start]); if (e > end) next.push([end, e]); }
+        }
+        freeIvs = next;
+      };
+
+      // Find best start time for item (preferred range first, any free interval as fallback)
+      const findStart = (item) => {
         const pref = item.slotPref;
         if (pref && pref !== 'any' && SLOT_RANGES[pref]) {
           const [prefStart, prefEnd] = SLOT_RANGES[pref];
-          // First: slot cursor already inside preferred range
-          for (const slot of slots) {
-            if (slot.cursor >= prefStart && slot.cursor < prefEnd && slot.cursor + item.duration <= slot.end)
-              return slot;
-          }
-          // Second: slot can be advanced to preferred start
-          for (const slot of slots) {
-            const tryFrom = Math.max(slot.cursor, prefStart);
-            if (tryFrom < prefEnd && tryFrom + item.duration <= slot.end) {
-              slot.cursor = tryFrom; // skip ahead — fillGaps will cover the gap
-              return slot;
-            }
+          for (const [s, e] of freeIvs) {
+            const tryFrom = Math.max(s, prefStart);
+            if (tryFrom < prefEnd && tryFrom + item.duration <= e) return tryFrom;
           }
         }
-        return slots.find(s => s.cursor + item.duration <= s.end) ?? null;
+        // Fallback: earliest interval that fits
+        for (const [s, e] of freeIvs) {
+          if (s + item.duration <= e) return s;
+        }
+        return null;
       };
 
       const scheduled = [], overflow = [];
       for (const item of sorted) {
-        const slot = placeItem(item);
-        if (slot) {
+        const startTime = findStart(item);
+        if (startTime !== null) {
+          reserve(startTime, item.duration);
           scheduled.push({ id: item.id, type: item.type, bucketId: item.bucketId,
             subtaskId: item.subtaskId, standaloneId: item.standaloneId,
-            label: item.label, icon: item.icon, startTime: slot.cursor,
-            endTime: slot.cursor + item.duration, duration: item.duration,
+            label: item.label, icon: item.icon, startTime,
+            endTime: startTime + item.duration, duration: item.duration,
             done: false, color: item.color, locked: false });
-          slot.cursor += item.duration;
-          if (item.duration > 90 && slot.cursor < slot.end) {
-            const bd = Math.min(25, slot.end - slot.cursor);
+          // Auto-break after long blocks
+          if (item.duration > 90) {
+            const bStart = startTime + item.duration;
+            const bd = Math.min(25, freeIvs.find(([s]) => s === bStart)?.[1] - bStart ?? 0);
             if (bd >= 10) {
+              reserve(bStart, bd);
               scheduled.push({ id: uid(), type: 'break', label: 'Break', icon: '☕',
                 bucketId: null, subtaskId: null, standaloneId: null,
-                startTime: slot.cursor, endTime: slot.cursor + bd, duration: bd,
+                startTime: bStart, endTime: bStart + bd, duration: bd,
                 done: false, color: { bg: BREAK_C.bg, text: BREAK_C.text }, locked: false });
-              slot.cursor += bd;
             }
           }
         } else {
